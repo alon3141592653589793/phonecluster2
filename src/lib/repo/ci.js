@@ -1,0 +1,96 @@
+export const ciFiles = [
+  {
+    path: ".github/workflows/build-pipeline.yml",
+    lang: "yaml",
+    description: "Cloud build → APK + PC bridge → release v0.1-testing",
+    content: `name: Build Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android APK (arm64-v8a) + PC bridge
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK 26.1.10909125 + CMake
+        run: sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Bootstrap Gradle wrapper if missing
+        working-directory: android
+        run: |
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.5
+          fi
+
+      - name: Make gradlew executable
+        working-directory: android
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Package PC bridge
+        run: zip -j pc-bridge.zip pc/connect_phone.bat pc/index.html
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: phonecluster-build
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            pc-bridge.zip
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1-testing
+          name: PhoneClusterApp v0.1 (testing)
+          prerelease: true
+          body: |
+            Automated build from commit \${{ github.sha }}.
+            - app-debug.apk : Android arm64-v8a
+            - pc-bridge.zip : connect_phone.bat + index.html
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            pc-bridge.zip
+`,
+  },
+  {
+    path: ".gitignore",
+    lang: "text",
+    description: "Ignore build outputs and local SDK config",
+    content: `.gradle/
+build/
+.cxx/
+local.properties
+*.iml
+.idea/
+.DS_Store
+`,
+  },
+];
