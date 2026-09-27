@@ -1,8 +1,8 @@
-name: Build Android APK
+name: Build Pipeline
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 permissions:
@@ -10,46 +10,74 @@ permissions:
 
 jobs:
   build:
-    name: Build APK & Create Release
+    name: Build Android APK (arm64-v8a) + PC bridge
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
-      - name: Generate Wrapper and Build APK
+      - name: Accept SDK licenses & install NDK 26.1 + CMake
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
         run: |
-          # Navigate to android folder if it exists
-          if [ -d "android" ]; then cd android; fi
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/cmdline-tools/16.0/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
 
-          # Generate Gradle wrapper if missing from the repository
-          if [ ! -f "gradlew" ]; then
-            gradle wrapper
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: Bootstrap Gradle wrapper jar if missing
+        working-directory: android
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.5
           fi
 
-          chmod +x gradlew
-          ./gradlew assembleDebug
+      - name: Make gradlew executable
+        working-directory: android
+        run: chmod +x gradlew
 
-      - name: Upload APK Artifact
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Package PC bridge (skip if files not committed yet)
+        run: |
+          if [ -f pc/connect_phone.bat ] && [ -f pc/index.html ]; then
+            zip -j pc-bridge.zip pc/connect_phone.bat pc/index.html
+            echo "PC_BRIDGE=pc-bridge.zip" >> $GITHUB_ENV
+          else
+            echo "pc/ files not present in this checkout — skipping bridge packaging."
+          fi
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: '**/build/outputs/apk/debug/*.apk'
+          name: phonecluster-build
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            pc-bridge.zip
 
-      - name: Create GitHub Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.1-testing
-          name: "PhoneCluster Node v0.1-testing"
-          draft: false
-          prerelease: false
-          files: '**/build/outputs/apk/debug/*.apk'
+          name: PhoneClusterApp v0.1 (testing)
+          prerelease: true
+          body: |
+            Automated build from commit ${{ github.sha }}.
+            - app-debug.apk : Android arm64-v8a
+            - pc-bridge.zip : connect_phone.bat + index.html (attached when pc/ is present)
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            pc-bridge.zip
