@@ -45,7 +45,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val title = TextView(this).apply {
-            text = "USB AI Compute Node v0.1"
+            text = "USB AI Compute Node v0.2"
             textSize = 22f
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 0, 0, pad)
