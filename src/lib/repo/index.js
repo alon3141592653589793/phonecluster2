@@ -3,8 +3,9 @@ import { kotlinFiles } from "./kotlin";
 import { nativeFiles } from "./native";
 import { pcFiles } from "./pc";
 import { ciFiles } from "./ci";
+import { wrapperFiles } from "./wrapper";
 
-export const repoFiles = [...ciFiles, ...androidFiles, ...nativeFiles, ...kotlinFiles, ...pcFiles];
+export const repoFiles = [...ciFiles, ...androidFiles, ...wrapperFiles, ...nativeFiles, ...kotlinFiles, ...pcFiles];
 
 export function buildRows(files) {
   const rows = [];
@@ -31,6 +32,7 @@ export function buildSetupScript(files) {
     out += "mkdir -p \"$(dirname '" + f.path + "')\"\n";
     out += "cat > '" + f.path + "' <<'PCA_EOF'\n" + f.content + "PCA_EOF\n\n";
   });
+  out += "chmod +x android/gradlew 2>/dev/null || true\n";
   out += "echo \"PhoneClusterApp scaffold created (" + files.length + " files).\"\n";
   return out;
 }

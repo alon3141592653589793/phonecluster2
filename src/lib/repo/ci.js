@@ -39,10 +39,10 @@ jobs:
         with:
           gradle-version: '8.5'
 
-      - name: Bootstrap Gradle wrapper if missing
+      - name: Bootstrap Gradle wrapper jar if missing
         working-directory: android
         run: |
-          if [ ! -f gradlew ]; then
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
             gradle wrapper --gradle-version 8.5
           fi
 
