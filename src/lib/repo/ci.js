@@ -56,8 +56,14 @@ jobs:
         working-directory: android
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Package PC bridge
-        run: zip -j pc-bridge.zip pc/connect_phone.bat pc/index.html
+      - name: Package PC bridge (skip if files not committed yet)
+        run: |
+          if [ -f pc/connect_phone.bat ] && [ -f pc/index.html ]; then
+            zip -j pc-bridge.zip pc/connect_phone.bat pc/index.html
+            echo "PC_BRIDGE=pc-bridge.zip" >> $GITHUB_ENV
+          else
+            echo "pc/ files not present in this checkout — skipping bridge packaging."
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -76,7 +82,7 @@ jobs:
           body: |
             Automated build from commit \${{ github.sha }}.
             - app-debug.apk : Android arm64-v8a
-            - pc-bridge.zip : connect_phone.bat + index.html
+            - pc-bridge.zip : connect_phone.bat + index.html (attached when pc/ is present)
           files: |
             android/app/build/outputs/apk/debug/app-debug.apk
             pc-bridge.zip
