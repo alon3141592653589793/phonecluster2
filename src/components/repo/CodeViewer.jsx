@@ -22,8 +22,15 @@ export default function CodeViewer({ file }) {
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <span className="hidden sm:inline font-mono text-[10px] uppercase tracking-widest text-[#6f6c66] mr-2">{file.lang}</span>
-          <button onClick={copy} className="p-2 rounded-lg hover:bg-white/5 transition-colors" title="Copy">
-            {copied ? <Check className="w-4 h-4 text-[#7fc4a1]" /> : <Copy className="w-4 h-4" />}
+          <button
+            onClick={copy}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
+              copied ? "bg-[#1f3a2e] text-[#7fc4a1]" : "bg-white/5 text-[#E9E6DF] hover:bg-white/10"
+            }`}
+            title="Copy file contents"
+          >
+            {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? "Copied" : "Copy"}
           </button>
           <button
             onClick={() => downloadText(file.path.split("/").pop(), file.content)}
