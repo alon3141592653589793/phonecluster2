@@ -116,6 +116,8 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+    // Embedded HTTP server for the compute daemon (loopback only)
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
 }
 `,
   },

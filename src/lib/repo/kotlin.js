@@ -1,139 +1,165 @@
 export const kotlinFiles = [
   {
-    path: "android/app/src/main/java/com/phoneclusterapp/MainActivity.kt",
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/ComputeModule.kt",
     lang: "kotlin",
-    description: "Control UI — permissions, daemon start, native status",
-    content: `package com.phoneclusterapp
+    description: "Pluggable engine contract — decoupled from the HTTP server",
+    content: `package com.phoneclusterapp.modules
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
+/**
+ * A ComputeModule owns a set of HTTP routes. The daemon's HTTP server walks the
+ * registered modules in order and lets the first module that returns a non-null
+ * [ModuleResponse] handle the request. This keeps new execution engines
+ * (LLM, MediaCodec, WASM, ...) out of core service logic.
+ *
+ * Modules must be stateless and thread-safe: the HTTP server may invoke
+ * [handle] concurrently from multiple worker threads.
+ */
+interface ComputeModule {
+    val id: String
+
+    /**
+     * @param method HTTP verb, e.g. "GET", "POST".
+     * @param uri    Request path (no query string).
+     * @param body   Raw request body (may be empty).
+     * @return A [ModuleResponse] to answer, or null if this module does not own the route.
+     */
+    fun handle(method: String, uri: String, body: String): ModuleResponse?
+}
+
+/** A minimal, transport-agnostic response rendered by the HTTP server. */
+data class ModuleResponse(
+    val status: Int = 200,
+    val mimeType: String = "application/json",
+    val body: String = ""
+)
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/InfoModule.kt",
+    lang: "kotlin",
+    description: "Capability discovery — GET /v1/info with live node metrics",
+    content: `package com.phoneclusterapp.modules
+
+import android.app.ActivityManager
+import android.content.Context
 import android.os.Build
-import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
-import android.view.Gravity
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
 
-class MainActivity : AppCompatActivity() {
+/**
+ * Exposes real-time node metrics at GET /v1/info so the PC bridge (or any client
+ * over adb forward) can discover capabilities before dispatching work.
+ */
+class InfoModule(
+    private val context: Context,
+    private val startTimeMs: Long,
+    private val moduleIds: List<String>
+) : ComputeModule {
 
-    private lateinit var statusView: TextView
-    private lateinit var notifButton: Button
-    private lateinit var batteryButton: Button
+    override val id = "info_daemon"
 
-    external fun getEngineStatus(): String
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (method != "GET" || uri != "/v1/info") return null
 
-    companion object {
-        private const val REQ_NOTIFICATIONS = 1001
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mem = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+        val totalMb = mem.totalMem / (1024L * 1024L)
+        val availMb = mem.availMem / (1024L * 1024L)
+        val abi = if (Build.SUPPORTED_ABIS.isNotEmpty()) Build.SUPPORTED_ABIS[0] else "unknown"
+        val nodeId = Settings.Secure.getString(
+            context.contentResolver, Settings.Secure.ANDROID_ID
+        ) ?: "unknown"
+        val uptimeMs = System.currentTimeMillis() - startTimeMs
 
-        init {
-            System.loadLibrary("LlamaServerBridge")
+        val json = JSONObject().apply {
+            put("node_id", nodeId)
+            put("device_model", Build.MODEL)
+            put("manufacturer", Build.MANUFACTURER)
+            put("cpu_cores", Runtime.getRuntime().availableProcessors())
+            put("abi", abi)
+            put("ram_total_mb", totalMb)
+            put("ram_available_mb", availMb)
+            put("modules", JSONArray(moduleIds))
+            put("os_version", Build.VERSION.RELEASE)
+            put("sdk_int", Build.VERSION.SDK_INT)
+            put("daemon_uptime_ms", uptimeMs)
+            put("port", 8080)
         }
+
+        return ModuleResponse(body = json.toString(2))
     }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/LlmStubModule.kt",
+    lang: "kotlin",
+    description: "Placeholder LLM engine — demonstrates pluggable module registration",
+    content: `package com.phoneclusterapp.modules
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        val pad = (24 * resources.displayMetrics.density).toInt()
+/**
+ * Stub for the future llama.cpp runtime. Claiming the /v1/completions and
+ * /v1/chat/completions routes now lets the routing architecture prove itself
+ * end-to-end before the native engine is linked.
+ */
+class LlmStubModule : ComputeModule {
 
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-        }
+    override val id = "llm_stub"
 
-        val title = TextView(this).apply {
-            text = "USB AI Compute Node v0.1"
-            textSize = 22f
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 0, 0, pad)
-        }
-
-        notifButton = Button(this).apply {
-            setOnClickListener { requestNotificationPermission() }
-        }
-
-        batteryButton = Button(this).apply {
-            setOnClickListener { requestBatteryExemption() }
-        }
-
-        val startButton = Button(this).apply {
-            text = "Start Daemon Service"
-            setOnClickListener { startDaemon() }
-        }
-
-        statusView = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, pad, 0, 0)
-            text = getEngineStatus()
-        }
-
-        listOf(title, notifButton, batteryButton, startButton, statusView).forEach { root.addView(it) }
-        setContentView(root)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        refreshPermissionLabels()
-    }
-
-    private fun hasNotificationPermission(): Boolean =
-        Build.VERSION.SDK_INT < 33 ||
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-
-    private fun isIgnoringBatteryOptimizations(): Boolean {
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        return pm.isIgnoringBatteryOptimizations(packageName)
-    }
-
-    private fun refreshPermissionLabels() {
-        notifButton.text =
-            if (hasNotificationPermission()) "Notifications: GRANTED" else "Grant Notifications"
-        batteryButton.text =
-            if (isIgnoringBatteryOptimizations()) "Battery Optimization: DISABLED" else "Disable Battery Optimization"
-    }
-
-    private fun requestNotificationPermission() {
-        if (Build.VERSION.SDK_INT >= 33 && !hasNotificationPermission()) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS
-            )
-        } else {
-            startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (uri == "/v1/completions" || uri == "/v1/chat/completions") {
+            return ModuleResponse(
+                status = 501,
+                body = """{"error":"llm_stub not implemented","detail":"llama.cpp runtime planned"}"""
             )
         }
+        return null
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/ComputeHttpServer.kt",
+    lang: "kotlin",
+    description: "Embedded HTTP server (NanoHTTPD) with module routing on loopback",
+    content: `package com.phoneclusterapp.modules
+
+import fi.iki.elonen.NanoHTTPD
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * Lightweight embedded HTTP server bound to 127.0.0.1:8080. Reachable from the PC
+ * via "adb forward tcp:8080 tcp:8080". Each request is dispatched on NanoHTTPD's
+ * own worker thread; modules are walked in registration order until one claims
+ * the route. Registration uses a [CopyOnWriteArrayList] so modules can be added
+ * safely while the server is serving traffic.
+ */
+class ComputeHttpServer(port: Int) : NanoHTTPD("127.0.0.1", port) {
+
+    private val modules = CopyOnWriteArrayList<ComputeModule>()
+
+    fun register(module: ComputeModule) {
+        modules.add(module)
     }
 
-    @SuppressLint("BatteryLife")
-    private fun requestBatteryExemption() {
-        if (!isIgnoringBatteryOptimizations()) {
-            startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
-            )
-        } else {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+    val registeredModuleIds: List<String> get() = modules.map { it.id }
+
+    override fun serve(session: IHTTPSession): Response {
+        val method = session.method.name
+        val uri = session.uri
+        for (module in modules) {
+            val result = module.handle(method, uri, "")
+            if (result != null) {
+                val status = Response.Status.lookup(result.status) ?: Response.Status.OK
+                return newFixedLengthResponse(status, result.mimeType, result.body)
+            }
         }
-    }
-
-    private fun startDaemon() {
-        ContextCompat.startForegroundService(this, Intent(this, ComputeDaemonService::class.java))
-        statusView.text = getEngineStatus() + "\\nDaemon: STARTING"
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        refreshPermissionLabels()
+        return newFixedLengthResponse(
+            Response.Status.NOT_FOUND,
+            "application/json",
+            """{"error":"no module handles \${method} \${uri}"}"""
+        )
     }
 }
 `,
@@ -141,7 +167,7 @@ class MainActivity : AppCompatActivity() {
   {
     path: "android/app/src/main/java/com/phoneclusterapp/ComputeDaemonService.kt",
     lang: "kotlin",
-    description: "Foreground daemon holding a partial CPU WakeLock",
+    description: "Foreground daemon — WakeLock, notification, HTTP server lifecycle",
     content: `package com.phoneclusterapp
 
 import android.app.Notification
@@ -156,6 +182,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.phoneclusterapp.modules.ComputeHttpServer
+import com.phoneclusterapp.modules.InfoModule
+import com.phoneclusterapp.modules.LlmStubModule
 
 class ComputeDaemonService : Service() {
 
@@ -163,33 +192,71 @@ class ComputeDaemonService : Service() {
         private const val TAG = "ComputeDaemon"
         private const val CHANNEL_ID = "compute_node"
         private const val NOTIFICATION_ID = 42
+        const val PORT = 8080
+
+        // Lightweight, queryable from the UI without binding to the service.
+        @Volatile
+        var running: Boolean = false
+            private set
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var server: ComputeHttpServer? = null
+    private var startTimeMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        startTimeMs = System.currentTimeMillis()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(
+                NOTIFICATION_ID, notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
         acquireWakeLock()
-        // TODO: boot llama.cpp server on 127.0.0.1:8080 through LlamaServerBridge
+        startServer()
+        running = true
         return START_STICKY
+    }
+
+    private fun startServer() {
+        if (server != null) return
+        try {
+            val moduleIds = listOf("info_daemon", "llm_stub")
+            val s = ComputeHttpServer(PORT).apply {
+                register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
+                register(LlmStubModule())
+                start(5000, false)
+            }
+            server = s
+            Log.i(TAG, "HTTP server on 127.0.0.1:\${PORT}  modules=\${s.registeredModuleIds}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start HTTP server", e)
+        }
+    }
+
+    private fun stopServer() {
+        server?.let {
+            try { it.stop() } catch (e: Exception) { Log.w(TAG, "server.stop()", e) }
+        }
+        server = null
     }
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneClusterApp::ComputeNode").apply {
+        wakeLock = pm.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK, "PhoneClusterApp::ComputeNode"
+        ).apply {
             setReferenceCounted(false)
             acquire()
         }
@@ -211,7 +278,7 @@ class ComputeDaemonService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("USB AI Compute Node")
-            .setContentText("Daemon active - listening on :8080")
+            .setContentText("Daemon active — listening on :\${PORT}")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
@@ -219,10 +286,210 @@ class ComputeDaemonService : Service() {
     }
 
     override fun onDestroy() {
+        stopServer()
+        running = false
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         Log.i(TAG, "Daemon stopped, WakeLock released")
         super.onDestroy()
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/MainActivity.kt",
+    lang: "kotlin",
+    description: "Diagnostics UI — daemon toggle, port, live /v1/info preview",
+    content: `package com.phoneclusterapp
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Typeface
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.view.Gravity
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import java.net.HttpURLConnection
+import java.net.URL
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var statusView: TextView
+    private lateinit var portView: TextView
+    private lateinit var toggleButton: Button
+    private lateinit var notifButton: Button
+    private lateinit var batteryButton: Button
+    private lateinit var refreshButton: Button
+    private lateinit var infoPreview: TextView
+
+    companion object {
+        private const val REQ_NOTIFICATIONS = 1001
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val pad = (24 * resources.displayMetrics.density).toInt()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val title = TextView(this).apply {
+            text = "USB AI Compute Node v0.1"
+            textSize = 22f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, pad)
+        }
+
+        statusView = TextView(this).apply {
+            textSize = 16f
+            setPadding(0, 0, 0, pad / 2)
+        }
+        portView = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 0, 0, pad / 2)
+        }
+
+        toggleButton = Button(this).apply { setOnClickListener { toggleDaemon() } }
+        notifButton = Button(this).apply { setOnClickListener { requestNotificationPermission() } }
+        batteryButton = Button(this).apply { setOnClickListener { requestBatteryExemption() } }
+        refreshButton = Button(this).apply {
+            text = "Refresh /v1/info"
+            setOnClickListener { refreshInfo() }
+        }
+
+        val infoLabel = TextView(this).apply {
+            text = "/v1/info"
+            textSize = 13f
+            setPadding(0, pad / 2, 0, 0)
+        }
+        infoPreview = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, 0)
+            text = "(daemon stopped)"
+        }
+
+        listOf(
+            title, statusView, portView, toggleButton,
+            notifButton, batteryButton, refreshButton, infoLabel, infoPreview
+        ).forEach { root.addView(it) }
+
+        setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshStatus()
+        refreshInfo()
+    }
+
+    private fun refreshStatus() {
+        val running = ComputeDaemonService.running
+        statusView.text = if (running) "Daemon: RUNNING" else "Daemon: STOPPED"
+        portView.text = "Port: 8080  (adb forward tcp:8080 tcp:8080)"
+        toggleButton.text = if (running) "Stop Daemon" else "Start Daemon"
+        refreshPermissionLabels()
+    }
+
+    private fun toggleDaemon() {
+        if (ComputeDaemonService.running) {
+            stopService(Intent(this, ComputeDaemonService::class.java))
+        } else {
+            ContextCompat.startForegroundService(
+                this, Intent(this, ComputeDaemonService::class.java)
+            )
+        }
+        toggleButton.postDelayed({ refreshStatus(); refreshInfo() }, 400)
+    }
+
+    private fun refreshInfo() {
+        if (!ComputeDaemonService.running) {
+            infoPreview.text = "(daemon stopped)"
+            return
+        }
+        Thread {
+            try {
+                val conn = URL("http://127.0.0.1:8080/v1/info").openConnection() as HttpURLConnection
+                conn.connectTimeout = 1500
+                conn.readTimeout = 1500
+                try {
+                    val text = conn.inputStream.bufferedReader().use { it.readText() }
+                    runOnUiThread { infoPreview.text = text }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { infoPreview.text = "error: " + e.message }
+            }
+        }.start()
+    }
+
+    private fun hasNotificationPermission(): Boolean =
+        Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    private fun refreshPermissionLabels() {
+        notifButton.text =
+            if (hasNotificationPermission()) "Notifications: GRANTED" else "Grant Notifications"
+        batteryButton.text =
+            if (isIgnoringBatteryOptimizations())
+                "Battery Optimization: DISABLED"
+            else
+                "Disable Battery Optimization"
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 && !hasNotificationPermission()) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS
+            )
+        } else {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:\$packageName"))
+            )
+        }
+    }
+
+    @SuppressLint("BatteryLife")
+    private fun requestBatteryExemption() {
+        if (!isIgnoringBatteryOptimizations()) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:\$packageName")
+                )
+            )
+        } else {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        refreshPermissionLabels()
     }
 }
 `,
