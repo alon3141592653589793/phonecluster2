@@ -71,8 +71,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1-testing
-          name: PhoneClusterApp v0.1 (testing)
+          tag_name: v0.2
+          name: PhoneClusterApp v0.2 (testing)
           prerelease: true
           body: |
             Automated build from commit ${{ github.sha }}.
