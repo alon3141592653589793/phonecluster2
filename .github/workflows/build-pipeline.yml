@@ -18,26 +18,26 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Make gradlew executable
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Wrapper and Build APK
         run: |
-          if [ -f "android/gradlew" ]; then
-            chmod +x android/gradlew
-          elif [ -f "gradlew" ]; then
-            chmod +x gradlew
+          # Navigate to android folder if it exists
+          if [ -d "android" ]; then cd android; fi
+
+          # Generate Gradle wrapper if missing from the repository
+          if [ ! -f "gradlew" ]; then
+            gradle wrapper
           fi
 
-      - name: Build Debug APK
-        run: |
-          if [ -d "android" ]; then
-            cd android && ./gradlew assembleDebug
-          else
-            ./gradlew assembleDebug
-          fi
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
@@ -45,7 +45,7 @@ jobs:
           name: app-debug
           path: '**/build/outputs/apk/debug/*.apk'
 
-      - name: Create GitHub Release for Obtainium
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.1-testing
