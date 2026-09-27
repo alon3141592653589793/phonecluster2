@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,25 +13,26 @@ import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusView: TextView
+    private lateinit var portView: TextView
+    private lateinit var toggleButton: Button
     private lateinit var notifButton: Button
     private lateinit var batteryButton: Button
-
-    external fun getEngineStatus(): String
+    private lateinit var refreshButton: Button
+    private lateinit var infoPreview: TextView
 
     companion object {
         private const val REQ_NOTIFICATIONS = 1001
-
-        init {
-            System.loadLibrary("LlamaServerBridge")
-        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,32 +51,88 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, pad)
         }
 
-        notifButton = Button(this).apply {
-            setOnClickListener { requestNotificationPermission() }
-        }
-
-        batteryButton = Button(this).apply {
-            setOnClickListener { requestBatteryExemption() }
-        }
-
-        val startButton = Button(this).apply {
-            text = "Start Daemon Service"
-            setOnClickListener { startDaemon() }
-        }
-
         statusView = TextView(this).apply {
+            textSize = 16f
+            setPadding(0, 0, 0, pad / 2)
+        }
+        portView = TextView(this).apply {
             textSize = 14f
-            setPadding(0, pad, 0, 0)
-            text = getEngineStatus()
+            setPadding(0, 0, 0, pad / 2)
         }
 
-        listOf(title, notifButton, batteryButton, startButton, statusView).forEach { root.addView(it) }
-        setContentView(root)
+        toggleButton = Button(this).apply { setOnClickListener { toggleDaemon() } }
+        notifButton = Button(this).apply { setOnClickListener { requestNotificationPermission() } }
+        batteryButton = Button(this).apply { setOnClickListener { requestBatteryExemption() } }
+        refreshButton = Button(this).apply {
+            text = "Refresh /v1/info"
+            setOnClickListener { refreshInfo() }
+        }
+
+        val infoLabel = TextView(this).apply {
+            text = "/v1/info"
+            textSize = 13f
+            setPadding(0, pad / 2, 0, 0)
+        }
+        infoPreview = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, 0)
+            text = "(daemon stopped)"
+        }
+
+        listOf(
+            title, statusView, portView, toggleButton,
+            notifButton, batteryButton, refreshButton, infoLabel, infoPreview
+        ).forEach { root.addView(it) }
+
+        setContentView(ScrollView(this).apply { addView(root) })
     }
 
     override fun onResume() {
         super.onResume()
+        refreshStatus()
+        refreshInfo()
+    }
+
+    private fun refreshStatus() {
+        val running = ComputeDaemonService.running
+        statusView.text = if (running) "Daemon: RUNNING" else "Daemon: STOPPED"
+        portView.text = "Port: 8080  (adb forward tcp:8080 tcp:8080)"
+        toggleButton.text = if (running) "Stop Daemon" else "Start Daemon"
         refreshPermissionLabels()
+    }
+
+    private fun toggleDaemon() {
+        if (ComputeDaemonService.running) {
+            stopService(Intent(this, ComputeDaemonService::class.java))
+        } else {
+            ContextCompat.startForegroundService(
+                this, Intent(this, ComputeDaemonService::class.java)
+            )
+        }
+        toggleButton.postDelayed({ refreshStatus(); refreshInfo() }, 400)
+    }
+
+    private fun refreshInfo() {
+        if (!ComputeDaemonService.running) {
+            infoPreview.text = "(daemon stopped)"
+            return
+        }
+        Thread {
+            try {
+                val conn = URL("http://127.0.0.1:8080/v1/info").openConnection() as HttpURLConnection
+                conn.connectTimeout = 1500
+                conn.readTimeout = 1500
+                try {
+                    val text = conn.inputStream.bufferedReader().use { it.readText() }
+                    runOnUiThread { infoPreview.text = text }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { infoPreview.text = "error: " + e.message }
+            }
+        }.start()
     }
 
     private fun hasNotificationPermission(): Boolean =
@@ -91,7 +149,10 @@ class MainActivity : AppCompatActivity() {
         notifButton.text =
             if (hasNotificationPermission()) "Notifications: GRANTED" else "Grant Notifications"
         batteryButton.text =
-            if (isIgnoringBatteryOptimizations()) "Battery Optimization: DISABLED" else "Disable Battery Optimization"
+            if (isIgnoringBatteryOptimizations())
+                "Battery Optimization: DISABLED"
+            else
+                "Disable Battery Optimization"
     }
 
     private fun requestNotificationPermission() {
@@ -110,16 +171,14 @@ class MainActivity : AppCompatActivity() {
     private fun requestBatteryExemption() {
         if (!isIgnoringBatteryOptimizations()) {
             startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
             )
         } else {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
-    }
-
-    private fun startDaemon() {
-        ContextCompat.startForegroundService(this, Intent(this, ComputeDaemonService::class.java))
-        statusView.text = getEngineStatus() + "\nDaemon: STARTING"
     }
 
     override fun onRequestPermissionsResult(
