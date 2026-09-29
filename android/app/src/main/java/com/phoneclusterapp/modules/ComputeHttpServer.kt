@@ -4,13 +4,15 @@ import fi.iki.elonen.NanoHTTPD
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
- * Lightweight embedded HTTP server bound to 127.0.0.1:8080. Reachable from the PC
- * via "adb forward tcp:8080 tcp:8080". Each request is dispatched on NanoHTTPD's
+ * Lightweight embedded HTTP server bound to 0.0.0.0:8080, so it is reachable on
+ * every active interface (loopback, USB tethering via rndis0/usb0, and Wi-Fi).
+ * The PC connects directly over USB Tethering (Ethernet-over-USB) or the LAN —
+ * no "adb forward" is required. Each request is dispatched on NanoHTTPD's
  * own worker thread; modules are walked in registration order until one claims
  * the route. Registration uses a [CopyOnWriteArrayList] so modules can be added
  * safely while the server is serving traffic.
  */
-class ComputeHttpServer(port: Int) : NanoHTTPD("127.0.0.1", port) {
+class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
 
     private val modules = CopyOnWriteArrayList<ComputeModule>()
 
