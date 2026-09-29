@@ -47,6 +47,12 @@ jobs:
         working-directory: android
         run: chmod +x gradlew
 
+      - name: Restore stable Android debug keystore
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: phonecluster-debug-keystore-v1
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --stacktrace
