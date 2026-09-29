@@ -33,13 +33,15 @@ start "" "%~dp0index.html"
 echo.
 echo Bridge active. Forwarding persists until the phone is unplugged
 echo or you run: adb forward --remove tcp:8080
+echo.
+echo (Wi-Fi only? Skip this script, open index.html, and set the node URL.)
 pause
 `,
   },
   {
     path: "pc/index.html",
     lang: "html",
-    description: "Test chat page talking to http://localhost:8080",
+    description: "Chat console — editable node URL, talks to /v1/info + /v1/completions",
     content: `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -50,8 +52,9 @@ pause
   :root { --bg:#0f1012; --panel:#17181b; --line:#26282c; --ink:#e8e6e1; --dim:#8a8a86; --ok:#6fcf97; --bad:#eb5757; }
   * { box-sizing:border-box; }
   body { margin:0; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--ink); display:flex; flex-direction:column; height:100vh; }
-  header { display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--line); }
-  h1 { font-size:15px; margin:0; letter-spacing:.02em; }
+  header { display:flex; gap:10px; align-items:center; padding:14px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; letter-spacing:.02em; margin-right:auto; }
+  #url { background:var(--panel); border:1px solid var(--line); color:var(--ink); padding:8px 10px; border-radius:8px; font:12px ui-monospace,monospace; width:240px; }
   #status { font:12px ui-monospace,monospace; color:var(--dim); }
   #status.ok { color:var(--ok); }
   #status.bad { color:var(--bad); }
@@ -66,14 +69,23 @@ pause
 </style>
 </head>
 <body>
-<header><h1>USB AI Compute Node</h1><span id="status">checking...</span></header>
+<header>
+  <h1>USB AI Compute Node</h1>
+  <input id="url" placeholder="http://phone-ip:8080" />
+  <span id="status">checking...</span>
+</header>
 <div id="log"></div>
 <form id="form">
   <input id="prompt" placeholder="Send a prompt to the phone..." autocomplete="off" />
   <button id="send">Send</button>
 </form>
 <script>
-  const API = "http://localhost:8080";
+  const urlInput = document.getElementById("url");
+  const saved = localStorage.getItem("phonecluster_url");
+  urlInput.value = saved || "http://localhost:8080";
+  urlInput.addEventListener("change", () => localStorage.setItem("phonecluster_url", urlInput.value));
+  function api() { return urlInput.value.replace(/\\/+$/,""); }
+
   const log = document.getElementById("log");
   const statusEl = document.getElementById("status");
   const input = document.getElementById("prompt");
@@ -90,11 +102,13 @@ pause
 
   async function checkHealth() {
     try {
-      const r = await fetch(API + "/health");
-      statusEl.textContent = r.ok ? "node online" : "node error " + r.status;
-      statusEl.className = r.ok ? "ok" : "bad";
+      const r = await fetch(api() + "/v1/info");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const d = await r.json();
+      statusEl.textContent = "online - " + (d.device_model || "node") + " / " + (d.abi || "?");
+      statusEl.className = "ok";
     } catch (e) {
-      statusEl.textContent = "offline - run connect_phone.bat";
+      statusEl.textContent = "offline";
       statusEl.className = "bad";
     }
   }
@@ -108,13 +122,13 @@ pause
     const bot = add("...", "bot");
     send.disabled = true;
     try {
-      const r = await fetch(API + "/completion", {
+      const r = await fetch(api() + "/v1/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: prompt, n_predict: 256 })
       });
       const data = await r.json();
-      bot.textContent = data.content || JSON.stringify(data);
+      bot.textContent = data.content || data.error || JSON.stringify(data) + " (HTTP " + r.status + ")";
     } catch (err) {
       bot.textContent = "Request failed: " + err.message;
     }
