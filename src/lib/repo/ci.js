@@ -76,12 +76,14 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2
+          tag_name: v0.2-\${{ github.run_number }}
           name: PhoneClusterApp v0.2 (testing)
           prerelease: true
+          make_latest: legacy
           body: |
             Automated build from commit \${{ github.sha }}.
-            - app-debug.apk : Android arm64-v8a
+            Prerelease flagged as "Latest" (make_latest: legacy) for Obtainium compatibility.
+            - app-debug.apk : Android arm64-v8a (install via Obtainium)
             - pc-bridge.zip : connect_phone.bat + index.html (attached when pc/ is present)
           files: |
             android/app/build/outputs/apk/debug/app-debug.apk
