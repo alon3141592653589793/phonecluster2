@@ -19,6 +19,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.net.URL
 
 class MainActivity : AppCompatActivity() {
@@ -30,6 +32,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
     private lateinit var infoPreview: TextView
+    private lateinit var networkView: TextView
 
     companion object {
         private const val REQ_NOTIFICATIONS = 1001
@@ -80,9 +83,22 @@ class MainActivity : AppCompatActivity() {
             text = "(daemon stopped)"
         }
 
+        val networkLabel = TextView(this).apply {
+            text = "Network endpoints"
+            textSize = 13f
+            setPadding(0, pad / 2, 0, 0)
+        }
+        networkView = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, 0)
+            text = "(detecting…)"
+        }
+
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton, infoLabel, infoPreview
+            notifButton, batteryButton, refreshButton, infoLabel, infoPreview,
+            networkLabel, networkView
         ).forEach { root.addView(it) }
 
         setContentView(ScrollView(this).apply { addView(root) })
@@ -97,9 +113,43 @@ class MainActivity : AppCompatActivity() {
     private fun refreshStatus() {
         val running = ComputeDaemonService.running
         statusView.text = if (running) "Daemon: RUNNING" else "Daemon: STOPPED"
-        portView.text = "Port: 8080  (adb forward tcp:8080 tcp:8080)"
+        portView.text = "Port: 8080  (0.0.0.0 — all interfaces)"
         toggleButton.text = if (running) "Stop Daemon" else "Start Daemon"
         refreshPermissionLabels()
+        refreshNetwork()
+    }
+
+    /**
+     * Enumerates active non-loopback IPv4 addresses (USB tethering via rndis0/usb0,
+     * Wi-Fi via wlan0, etc.) so the user knows exactly which URL to query from the
+     * PC over USB Tethering / the LAN.
+     */
+    private fun localIpAddresses(): List<String> {
+        val ips = mutableListOf<String>()
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces() ?: return ips
+            for (intf in interfaces) {
+                if (!intf.isUp || intf.isLoopback) continue
+                for (addr in intf.inetAddresses) {
+                    if (addr.isLoopbackAddress) continue
+                    if (addr is Inet4Address) addr.hostAddress?.let { ips.add(it) }
+                }
+            }
+        } catch (e: Exception) {
+            // ignore — surfaced as an empty list
+        }
+        return ips
+    }
+
+    private fun refreshNetwork() {
+        val ips = localIpAddresses()
+        networkView.text = if (ips.isEmpty()) {
+            "No LAN/USB IP detected\nFallback: adb forward tcp:8080 tcp:8080"
+        } else {
+            buildString {
+                for (ip in ips) append("http://").append(ip).append(":8080/v1/info\n")
+            }.trimEnd()
+        }
     }
 
     private fun toggleDaemon() {
