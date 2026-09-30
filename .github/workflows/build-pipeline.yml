@@ -53,6 +53,9 @@ jobs:
           path: ~/.android/debug.keystore
           key: phonecluster-debug-keystore-v1
 
+      - name: Fetch llama.cpp source (Milestone 1: native inference)
+        run: git clone --depth 1 --branch b11257 https://github.com/ggml-org/llama.cpp android/app/src/main/cpp/llama.cpp
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --stacktrace
@@ -83,7 +86,7 @@ jobs:
           make_latest: legacy
           body: |
             Automated build from commit ${{ github.sha }}.
-            Prerelease flagged as "Latest" (make_latest: legacy) for Obtainium compatibility.
+            Milestone 1: real llama.cpp inference via JNI (TinyLlama 1.1B Q4_K_M).
             - app-debug.apk : Android arm64-v8a (install via Obtainium)
             - pc-bridge.zip : connect_phone.bat + index.html (attached when pc/ is present)
           files: |
