@@ -158,8 +158,15 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
             addCorsHeaders(preflight)
             return preflight
         }
+        // Always drain the request body. Leaving POST bytes unread corrupts the
+        // next request on a keep-alive connection (random "offline" flaps).
+        val body = if (method == "POST" || method == "PUT") {
+            val files = HashMap<String, String>()
+            try { session.parseBody(files) } catch (e: Exception) { }
+            files["postData"] ?: ""
+        } else ""
         for (module in modules) {
-            val result = module.handle(method, uri, "")
+            val result = module.handle(method, uri, body)
             if (result != null) {
                 val status = Response.Status.lookup(result.status) ?: Response.Status.OK
                 val resp = newFixedLengthResponse(status, result.mimeType, result.body)
@@ -200,6 +207,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -224,6 +232,7 @@ class ComputeDaemonService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var server: ComputeHttpServer? = null
     private var startTimeMs = 0L
     private var nsdManager: NsdManager? = null
@@ -341,6 +350,20 @@ class ComputeDaemonService : Service() {
             acquire()
         }
         Log.i(TAG, "CPU WakeLock acquired")
+
+        // Keep the Wi-Fi radio out of power-save so the node stays reachable
+        // with the screen off (a CPU WakeLock alone does not do this).
+        if (wifiLock?.isHeld != true) {
+            val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            wifiLock = wm.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF, "PhoneClusterApp::Wifi"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Log.i(TAG, "WifiLock acquired")
+        }
     }
 
     private fun createChannel() {
@@ -370,7 +393,9 @@ class ComputeDaemonService : Service() {
         running = false
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
-        Log.i(TAG, "Daemon stopped, WakeLock released")
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
+        Log.i(TAG, "Daemon stopped, WakeLock + WifiLock released")
         super.onDestroy()
     }
 }
