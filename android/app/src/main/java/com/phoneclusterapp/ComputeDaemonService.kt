@@ -18,7 +18,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.phoneclusterapp.modules.ComputeHttpServer
 import com.phoneclusterapp.modules.InfoModule
-import com.phoneclusterapp.modules.LlmStubModule
+import com.phoneclusterapp.modules.LlmModule
 
 class ComputeDaemonService : Service() {
 
@@ -68,10 +68,10 @@ class ComputeDaemonService : Service() {
     private fun startServer() {
         if (server != null) return
         try {
-            val moduleIds = listOf("info_daemon", "llm_stub")
+            val moduleIds = listOf("info_daemon", "llm")
             val s = ComputeHttpServer(PORT).apply {
                 register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
-                register(LlmStubModule())
+                register(LlmModule(this@ComputeDaemonService))
                 start(5000, false)
             }
             server = s
