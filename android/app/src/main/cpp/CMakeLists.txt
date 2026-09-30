@@ -1,18 +1,28 @@
 cmake_minimum_required(VERSION 3.22.1)
-project("LlamaServerBridge" LANGUAGES CXX)
+project(llamaserver LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Planned: add_subdirectory(llama.cpp) with -DGGML_VULKAN=ON -DGGML_OPENMP=ON
-#          producing libllama.so and linking it below.
+# Build llama.cpp (vendored ggml + llama) as static libs linked into the JNI bridge.
+set(BUILD_SHARED_LIBS     OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES  OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS     OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER    OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_APP       OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON    OFF CACHE BOOL "" FORCE)
+set(LLAMA_OPENSSL          OFF CACHE BOOL "" FORCE)
+set(GGML_NATIVE           OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL       OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA             OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN           OFF CACHE BOOL "" FORCE)
+set(GGML_METAL            OFF CACHE BOOL "" FORCE)
+set(GGML_OPENCL           OFF CACHE BOOL "" FORCE)
+set(GGML_BLAS             OFF CACHE BOOL "" FORCE)
 
-add_library(LlamaServerBridge SHARED
-    LlamaServerBridge.cpp
-)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp llama_build EXCLUDE_FROM_ALL)
 
-find_library(log-lib log)
-
-target_link_libraries(LlamaServerBridge
-    ${log-lib}
-)
+add_library(LlamaServerBridge SHARED LlamaServerBridge.cpp)
+target_link_libraries(LlamaServerBridge llama log android)
