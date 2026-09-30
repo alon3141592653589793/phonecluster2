@@ -37,8 +37,15 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
             addCorsHeaders(preflight)
             return preflight
         }
+        // Always drain the request body. Leaving POST bytes unread corrupts the
+        // next request on a keep-alive connection (random "offline" flaps).
+        val body = if (method == "POST" || method == "PUT") {
+            val files = HashMap<String, String>()
+            try { session.parseBody(files) } catch (e: Exception) { }
+            files["postData"] ?: ""
+        } else ""
         for (module in modules) {
-            val result = module.handle(method, uri, "")
+            val result = module.handle(method, uri, body)
             if (result != null) {
                 val status = Response.Status.lookup(result.status) ?: Response.Status.OK
                 val resp = newFixedLengthResponse(status, result.mimeType, result.body)
