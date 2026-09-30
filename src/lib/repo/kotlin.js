@@ -422,9 +422,12 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -438,11 +441,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var notifButton: Button
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var modelButton: Button
+    private lateinit var modelStatus: TextView
     private lateinit var infoPreview: TextView
     private lateinit var networkView: TextView
 
+    @Volatile
+    private var modelDownloading = false
+
     companion object {
         private const val REQ_NOTIFICATIONS = 1001
+        const val MODEL_URL =
+            "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+        const val MODEL_FILENAME = "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -478,6 +489,19 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { refreshInfo() }
         }
 
+        val modelLabel = TextView(this).apply {
+            text = "Test model"
+            textSize = 13f
+            setPadding(0, pad / 2, 0, 0)
+        }
+        modelButton = Button(this).apply { setOnClickListener { downloadModel() } }
+        modelStatus = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, 0)
+            text = "checking model..."
+        }
+
         val infoLabel = TextView(this).apply {
             text = "/v1/info"
             textSize = 13f
@@ -504,8 +528,9 @@ class MainActivity : AppCompatActivity() {
 
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton, infoLabel, infoPreview,
-            networkLabel, networkView
+            notifButton, batteryButton, refreshButton,
+            modelLabel, modelButton, modelStatus,
+            infoLabel, infoPreview, networkLabel, networkView
         ).forEach { root.addView(it) }
 
         setContentView(ScrollView(this).apply { addView(root) })
@@ -515,6 +540,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         refreshStatus()
         refreshInfo()
+        refreshModelState()
     }
 
     private fun refreshStatus() {
@@ -568,6 +594,72 @@ class MainActivity : AppCompatActivity() {
             )
         }
         toggleButton.postDelayed({ refreshStatus(); refreshInfo() }, 400)
+    }
+
+    private fun modelFile(): File {
+        val dir = getExternalFilesDir("models") ?: filesDir
+        return File(dir, MODEL_FILENAME)
+    }
+
+    private fun refreshModelState() {
+        val f = modelFile()
+        modelStatus.text = if (f.exists()) {
+            "Model ready: " + "%.1f".format(f.length() / 1048576.0) + " MB"
+        } else {
+            "No model installed"
+        }
+        modelButton.text = if (f.exists()) "Reinstall test model" else "Install test model"
+        modelButton.isEnabled = !modelDownloading
+    }
+
+    private fun downloadModel() {
+        if (modelDownloading) return
+        modelDownloading = true
+        modelButton.isEnabled = false
+        modelStatus.text = "Downloading test model..."
+        Thread {
+            try {
+                val conn = URL(MODEL_URL).openConnection() as HttpURLConnection
+                conn.connectTimeout = 20000
+                conn.readTimeout = 60000
+                conn.instanceFollowRedirects = true
+                val total = conn.contentLengthLong
+                val f = modelFile()
+                f.parentFile?.mkdirs()
+                var lastPct = -1
+                conn.inputStream.use { input ->
+                    FileOutputStream(f).use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        var read: Int
+                        var done = 0L
+                        while (input.read(buf).also { read = it } != -1) {
+                            out.write(buf, 0, read)
+                            done += read
+                            if (total > 0) {
+                                val pct = (done * 100 / total).toInt()
+                                if (pct != lastPct && pct % 5 == 0) {
+                                    lastPct = pct
+                                    runOnUiThread {
+                                        modelStatus.text = "Downloading… " + pct + "% (" + (done / 1048576) + " MB)"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                runOnUiThread {
+                    modelDownloading = false
+                    refreshModelState()
+                    Toast.makeText(this, "Model installed", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    modelDownloading = false
+                    modelStatus.text = "Download failed: " + e.message
+                    modelButton.isEnabled = true
+                }
+            }
+        }.start()
     }
 
     private fun refreshInfo() {
