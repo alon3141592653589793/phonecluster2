@@ -58,6 +58,9 @@ jobs:
           path: ~/.android/debug.keystore
           key: phonecluster-debug-keystore-v1
 
+      - name: Fetch llama.cpp source (Milestone 1: native inference)
+        run: git clone --depth 1 --branch b11257 https://github.com/ggml-org/llama.cpp android/app/src/main/cpp/llama.cpp
+
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --stacktrace
@@ -107,6 +110,7 @@ local.properties
 *.iml
 .idea/
 .DS_Store
+android/app/src/main/cpp/llama.cpp/
 `,
   },
 ];
