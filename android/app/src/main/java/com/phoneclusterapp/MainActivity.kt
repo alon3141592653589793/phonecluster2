@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var notifButton: Button
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var clusterButton: Button
     private lateinit var modelButton: Button
     private lateinit var modelStatus: TextView
     private lateinit var infoPreview: TextView
@@ -81,6 +82,12 @@ class MainActivity : AppCompatActivity() {
             text = "Refresh /v1/info"
             setOnClickListener { refreshInfo() }
         }
+        clusterButton = Button(this).apply {
+            text = "Open Cluster Console (fake PC)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, ClusterConsoleActivity::class.java))
+            }
+        }
 
         val modelLabel = TextView(this).apply {
             text = "Test model"
@@ -121,7 +128,7 @@ class MainActivity : AppCompatActivity() {
 
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton,
+            notifButton, batteryButton, refreshButton, clusterButton,
             modelLabel, modelButton, modelStatus,
             infoLabel, infoPreview, networkLabel, networkView
         ).forEach { root.addView(it) }
