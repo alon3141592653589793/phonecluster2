@@ -158,11 +158,12 @@ class LlmModule(private val context: Context) : ComputeModule {
     override fun handle(method: String, uri: String, body: String): ModuleResponse? {
         if (uri != "/v1/completions" && uri != "/v1/chat/completions") return null
         if (method != "POST") {
-            return ModuleResponse(status = 405, body = JSONObject().put("error", "method_not_allowed").toString())
+            return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
         }
         synchronized(lock) {
             if (!ensureLoaded()) {
                 return ModuleResponse(status = 503, body = JSONObject().apply {
+                    put("error_code", "MODEL_NOT_LOADED")
                     put("error", "model_not_loaded")
                     put("detail", "Tap 'Install test model' in the app, then retry.")
                 }.toString())
@@ -179,6 +180,7 @@ class LlmModule(private val context: Context) : ComputeModule {
                 }.toString())
             } catch (e: Exception) {
                 ModuleResponse(status = 500, body = JSONObject().apply {
+                    put("error_code", "INFERENCE_FAILED")
                     put("error", "inference_failed")
                     put("detail", e.message ?: "")
                 }.toString())
@@ -215,6 +217,7 @@ class LlmModule(private val context: Context) : ComputeModule {
     content: `package com.phoneclusterapp.modules
 
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -266,7 +269,7 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
         val notFound = newFixedLengthResponse(
             Response.Status.NOT_FOUND,
             "application/json",
-            """{"error":"no module handles \${method} \${uri}"}"""
+            JSONObject().put("error_code", "NOT_FOUND").put("error", "no module handles " + method + " " + uri).toString()
         )
         addCorsHeaders(notFound)
         return notFound
@@ -1253,6 +1256,7 @@ class GpuInfoModule : ComputeModule {
         } catch (e: Exception) {
             return ModuleResponse(status = 200, body = JSONObject().apply {
                 put("module", "gpu_info")
+                put("error_code", "GPU_UNAVAILABLE")
                 put("error", "gpu_unavailable")
                 put("detail", e.message ?: "")
             }.toString())
@@ -1423,11 +1427,11 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
     override fun handle(method: String, uri: String, body: String): ModuleResponse? {
         when (uri) {
             "/v1/cluster/nodes" -> {
-                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "GET") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 return ModuleResponse(body = JSONObject().put("nodes", allNodes(350)).toString())
             }
             "/v1/cluster/info" -> {
-                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "GET") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 val nodes = allNodes(350)
                 var cores = 0
                 var ram = 0L
@@ -1446,7 +1450,7 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                     .put("nodes", nodes).toString())
             }
             "/v1/cluster/completions" -> {
-                if (method != "POST") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "POST") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 val req = try { JSONObject(if (body.isBlank()) "{}" else body) } catch (_: Exception) { JSONObject() }
                 val prompt = req.optString("prompt", "")
                 val nPredict = req.optInt("n_predict", req.optInt("max_tokens", 96))

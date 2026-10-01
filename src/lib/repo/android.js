@@ -87,6 +87,15 @@ android {
         }
     }
 
+    signingConfigs {
+        debug {
+            storeFile file("${rootProject.projectDir}/debug.keystore")
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false

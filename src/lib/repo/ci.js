@@ -52,11 +52,17 @@ jobs:
         working-directory: android
         run: chmod +x gradlew
 
-      - name: Restore stable Android debug keystore
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: phonecluster-debug-keystore-v1
+      - name: Ensure stable debug keystore (committed for consistent signing)
+        run: |
+          KS="$GITHUB_WORKSPACE/android/debug.keystore"
+          if [ ! -f "$KS" ]; then
+            keytool -genkeypair -keystore "$KS" -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=PhoneCluster Debug, O=PhoneCluster, C=US"
+            echo "NEW_KEYSTORE=1" >> $GITHUB_ENV
+            echo "Generated new debug keystore (will be committed back)"
+          else
+            echo "Using committed debug keystore"
+          fi
 
       - name: "Fetch llama.cpp source (Milestone 1: native inference)"
         run: git clone --depth 1 --branch b11257 https://github.com/ggml-org/llama.cpp android/app/src/main/cpp/llama.cpp
@@ -64,6 +70,15 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: ./gradlew assembleDebug --stacktrace
+
+      - name: Commit debug keystore if newly generated
+        if: env.NEW_KEYSTORE == '1'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add android/debug.keystore
+          git commit -m "chore: add stable debug keystore for consistent APK signing"
+          git push
 
       - name: Package PC bridge (skip if files not committed yet)
         run: |
