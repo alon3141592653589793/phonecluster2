@@ -1,4 +1,8 @@
-package com.phoneclusterapp
+const clusterConsoleFile = {
+  path: "android/app/src/main/java/com/phoneclusterapp/ClusterConsoleActivity.kt",
+  lang: "kotlin",
+  description: "Fake-PC cluster console — local nodes + LAN cluster discovery & dispatch",
+  content: `package com.phoneclusterapp
 
 import android.graphics.Color
 import android.graphics.Typeface
@@ -15,9 +19,10 @@ import java.net.URL
 import org.json.JSONObject
 
 /**
- * In-app "fake PC": shows the 2 local nodes, discovers peer PhoneCluster nodes
- * on the LAN, and dispatches prompts either to both local nodes or to the whole
- * cluster. Lets one phone stand in for several phones + a PC.
+ * In-app "fake PC": simulates a PC orchestrator talking to two compute nodes
+ * running on this same phone (ports 8080 and 8081). Discover nodes, dispatch a
+ * prompt to both, compare responses — with no PC attached.
+ * Requires the daemon to be running (it starts both node instances).
  */
 class ClusterConsoleActivity : AppCompatActivity() {
 
@@ -40,8 +45,8 @@ class ClusterConsoleActivity : AppCompatActivity() {
             android.util.Log.e("ClusterConsole", "CONSOLE_INIT_FAILED", e)
             val pad = (16 * resources.displayMetrics.density).toInt()
             setContentView(TextView(this).apply {
-                text = "Cluster console could not open\n\nerror_code: CONSOLE_INIT_FAILED\nerror: " +
-                    (e.message ?: e.javaClass.simpleName) + "\n\nReturn to the main screen and retry."
+                text = "Cluster console could not open\\n\\nerror_code: CONSOLE_INIT_FAILED\\nerror: " +
+                    (e.message ?: e.javaClass.simpleName) + "\\n\\nReturn to the main screen and retry."
                 setPadding(pad, pad, pad, pad)
                 setTextIsSelectable(true)
             })
@@ -64,14 +69,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
             setPadding(0, 0, 0, pad)
         })
         root.addView(TextView(this).apply {
-            text = "Start the daemon first — 2 local nodes + LAN cluster orchestrator."
+            text = "Start the daemon on the main screen first — it runs 2 nodes on this phone."
             textSize = 12f
             setPadding(0, 0, 0, pad)
         })
 
         val nodesRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 0, 0, pad / 2)
+            setPadding(0, 0, 0, pad)
         }
         nodeViews = nodes.map { entry ->
             val (name, port) = entry
@@ -79,7 +84,7 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 textSize = 11f
                 typeface = Typeface.MONOSPACE
                 setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
-                text = name + "\n:" + port + "\n(checking…)"
+                text = name + "\\n:" + port + "\\n(checking…)"
             }.also { tv ->
                 nodesRow.addView(tv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             }
@@ -112,13 +117,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
             textSize = 12f
             typeface = Typeface.MONOSPACE
             setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
-            text = "(send a prompt)"
+            text = "(send a prompt to dispatch to both nodes)"
             setBackgroundColor(Color.parseColor("#1a1a1a"))
             setTextColor(Color.parseColor("#e8e6e1"))
         }
         val scroll = ScrollView(this).apply {
             addView(log, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
             ))
         }
         root.addView(scroll, LinearLayout.LayoutParams(
@@ -143,14 +149,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
             val p = input.text.toString().trim()
             if (p.isEmpty()) return@setOnClickListener
             input.setText("")
-            log.append("\nyou> " + p)
+            log.append("\\nyou> " + p)
             dispatchLocal(p)
         }
         sendCluster.setOnClickListener {
             val p = input.text.toString().trim()
             if (p.isEmpty()) return@setOnClickListener
             input.setText("")
-            log.append("\nyou(cluster)> " + p)
+            log.append("\\nyou(cluster)> " + p)
             dispatchCluster(p)
         }
 
@@ -174,44 +180,15 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 } catch (e: Exception) { null }
                 runOnUiThread {
                     nodeViews[i].text = if (info != null) {
-                        name + " :" + port + "\n" + info.optString("device_model", "?") +
-                            " · " + info.optInt("cpu_cores") + " cores\n" +
-                            "ram " + info.optLong("ram_available_mb") + " MB"
+                        name + " :" + port + "\\n" + info.optString("device_model", "?") +
+                            " · " + info.optInt("cpu_cores") + " cores\\n" +
+                            "ram " + info.optLong("ram_available_mb") + " MB free"
                     } else {
-                        name + " :" + port + "\noffline"
+                        name + " :" + port + "\\noffline (start daemon)"
                     }
                 }
             }.start()
         }
-    }
-
-    private fun discoverCluster() {
-        discoverBtn.isEnabled = false
-        clusterView.text = "scanning LAN…"
-        Thread {
-            try {
-                val c = URL("http://127.0.0.1:8080/v1/cluster/info").openConnection() as HttpURLConnection
-                c.connectTimeout = 8000
-                c.readTimeout = 8000
-                val info = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
-                c.disconnect()
-                val sb = StringBuilder()
-                sb.append("Nodes: ").append(info.optInt("node_count"))
-                  .append("  cores: ").append(info.optInt("cluster_cpu_cores"))
-                  .append("  ram: ").append(info.optLong("cluster_ram_available_mb")).append(" MB\n")
-                val ns = info.optJSONArray("nodes")
-                if (ns != null) for (i in 0 until ns.length()) {
-                    val n = ns.optJSONObject(i) ?: continue
-                    val ni = n.optJSONObject("info") ?: JSONObject()
-                    sb.append(if (n.optBoolean("self")) "self " else "peer ")
-                      .append(n.optString("host")).append(":").append(n.optInt("port"))
-                      .append("  ").append(ni.optString("device_model", "?")).append("\n")
-                }
-                runOnUiThread { clusterView.text = sb.toString().trimEnd(); discoverBtn.isEnabled = true }
-            } catch (e: Exception) {
-                runOnUiThread { clusterView.text = "error: " + e.message; discoverBtn.isEnabled = true }
-            }
-        }.start()
     }
 
     private fun dispatchLocal(prompt: String) {
@@ -243,16 +220,45 @@ class ClusterConsoleActivity : AppCompatActivity() {
                     } catch (_: Exception) { raw }
                 } catch (e: Exception) { "error: " + e.message }
                 runOnUiThread {
-                    log.append("\n" + name + "> " + resp)
+                    log.append("\\n" + name + "> " + resp)
                     if (done.incrementAndGet() == nodes.size) { sendBoth.isEnabled = true; sendCluster.isEnabled = true }
                 }
             }.start()
         }
     }
 
+    private fun discoverCluster() {
+        discoverBtn.isEnabled = false
+        clusterView.text = "scanning LAN…"
+        Thread {
+            try {
+                val c = URL("http://127.0.0.1:8080/v1/cluster/info").openConnection() as HttpURLConnection
+                c.connectTimeout = 8000
+                c.readTimeout = 8000
+                val info = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                c.disconnect()
+                val sb = StringBuilder()
+                sb.append("Nodes: ").append(info.optInt("node_count"))
+                  .append("  cores: ").append(info.optInt("cluster_cpu_cores"))
+                  .append("  ram: ").append(info.optLong("cluster_ram_available_mb")).append(" MB\\n")
+                val ns = info.optJSONArray("nodes")
+                if (ns != null) for (i in 0 until ns.length()) {
+                    val n = ns.optJSONObject(i) ?: continue
+                    val ni = n.optJSONObject("info") ?: JSONObject()
+                    sb.append(if (n.optBoolean("self")) "self " else "peer ")
+                      .append(n.optString("host")).append(":").append(n.optInt("port"))
+                      .append("  ").append(ni.optString("device_model", "?")).append("\\n")
+                }
+                runOnUiThread { clusterView.text = sb.toString().trimEnd(); discoverBtn.isEnabled = true }
+            } catch (e: Exception) {
+                runOnUiThread { clusterView.text = "error: " + e.message; discoverBtn.isEnabled = true }
+            }
+        }.start()
+    }
+
     private fun dispatchCluster(prompt: String) {
         sendBoth.isEnabled = false; sendCluster.isEnabled = false
-        log.append("\n(dispatching to whole cluster…)")
+        log.append("\\n(dispatching to whole cluster…)")
         Thread {
             try {
                 val c = URL("http://127.0.0.1:8080/v1/cluster/completions").openConnection() as HttpURLConnection
@@ -276,7 +282,7 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 val sb = StringBuilder()
                 if (results != null) for (i in 0 until results.length()) {
                     val r = results.optJSONObject(i) ?: continue
-                    sb.append("\n").append(r.optString("host")).append(":").append(r.optInt("port"))
+                    sb.append("\\n").append(r.optString("host")).append(":").append(r.optInt("port"))
                       .append(if (r.optBoolean("self")) " (self)" else "").append("> ")
                       .append(r.optString("content", "?"))
                 }
@@ -286,10 +292,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    log.append("\ncluster error: " + e.message)
+                    log.append("\\ncluster error: " + e.message)
                     sendBoth.isEnabled = true; sendCluster.isEnabled = true
                 }
             }
         }.start()
     }
 }
+`,
+};
+
+export default clusterConsoleFile;
