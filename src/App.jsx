@@ -12,6 +12,7 @@ import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ScrollToTop from './components/ScrollToTop';
+import DebugRecorder from '@/components/debug/DebugRecorder'; // DEBUG ONLY — remove before public
 // Add page imports here
 
 const AuthenticatedApp = () => {
@@ -39,6 +40,8 @@ const AuthenticatedApp = () => {
 
   // Render the main app
   return (
+    <>
+    <DebugRecorder />
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
@@ -49,6 +52,7 @@ const AuthenticatedApp = () => {
       </Route>
       <Route path="*" element={<PageNotFound />} />
     </Routes>
+    </>
   );
 };
 
