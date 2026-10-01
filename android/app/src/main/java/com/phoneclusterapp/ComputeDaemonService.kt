@@ -27,6 +27,9 @@ class ComputeDaemonService : Service() {
         private const val CHANNEL_ID = "compute_node"
         private const val NOTIFICATION_ID = 42
         const val PORT = 8080
+        // Cluster simulator: run two node instances on one phone so a single
+        // device can stand in for two phones + a PC (no real PC needed).
+        val PORTS = listOf(8080, 8081)
 
         // Lightweight, queryable from the UI without binding to the service.
         @Volatile
@@ -36,10 +39,10 @@ class ComputeDaemonService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private var server: ComputeHttpServer? = null
+    private val servers = mutableListOf<ComputeHttpServer>()
     private var startTimeMs = 0L
     private var nsdManager: NsdManager? = null
-    private var nsdRegistration: NsdManager.RegistrationListener? = null
+    private val nsdRegistrations = mutableListOf<NsdManager.RegistrationListener>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,28 +69,30 @@ class ComputeDaemonService : Service() {
     }
 
     private fun startServer() {
-        if (server != null) return
-        try {
-            val moduleIds = listOf("info_daemon", "llm")
-            val s = ComputeHttpServer(PORT).apply {
-                register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
-                register(LlmModule(this@ComputeDaemonService))
-                start(5000, false)
+        if (servers.isNotEmpty()) return
+        val moduleIds = listOf("info_daemon", "llm")
+        for (port in PORTS) {
+            try {
+                val s = ComputeHttpServer(port).apply {
+                    register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
+                    register(LlmModule(this@ComputeDaemonService))
+                    start(5000, false)
+                }
+                servers.add(s)
+                Log.i(TAG, "HTTP server on 0.0.0.0:${port}  modules=${s.registeredModuleIds}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start HTTP server on ${port}", e)
             }
-            server = s
-            Log.i(TAG, "HTTP server on 0.0.0.0:${PORT}  modules=${s.registeredModuleIds}")
-            registerNsd()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start HTTP server", e)
         }
+        registerNsd()
     }
 
     private fun stopServer() {
         unregisterNsd()
-        server?.let {
-            try { it.stop() } catch (e: Exception) { Log.w(TAG, "server.stop()", e) }
+        for (s in servers) {
+            try { s.stop() } catch (e: Exception) { Log.w(TAG, "server.stop()", e) }
         }
-        server = null
+        servers.clear()
     }
 
     /**
@@ -97,7 +102,7 @@ class ComputeDaemonService : Service() {
      * share the network.
      */
     private fun registerNsd() {
-        if (nsdRegistration != null) return
+        if (nsdRegistrations.isNotEmpty()) return
         val nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
         nsdManager = nsd
         val shortId = try {
@@ -105,41 +110,43 @@ class ComputeDaemonService : Service() {
                 contentResolver, android.provider.Settings.Secure.ANDROID_ID
             )?.take(6) ?: ""
         } catch (e: Exception) { "" }
-        val service = NsdServiceInfo().apply {
-            serviceName = if (shortId.isNotEmpty()) "PhoneCluster-Node-${shortId}" else "PhoneCluster-Node"
-            serviceType = "_http._tcp."
-            port = PORT
-        }
-        val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) {
-                Log.i(TAG, "NSD registered: ${info.serviceName} :${info.port}")
+        PORTS.forEachIndexed { i, p ->
+            val suffix = if (shortId.isNotEmpty()) "${shortId}-${'A' + i}" else "${'A' + i}"
+            val service = NsdServiceInfo().apply {
+                serviceName = "PhoneCluster-Node-${suffix}"
+                serviceType = "_http._tcp."
+                port = p
             }
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "NSD registration failed: $errorCode")
+            val listener = object : NsdManager.RegistrationListener {
+                override fun onServiceRegistered(info: NsdServiceInfo) {
+                    Log.i(TAG, "NSD registered: ${info.serviceName} :${info.port}")
+                }
+                override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                    Log.e(TAG, "NSD registration failed: $errorCode")
+                }
+                override fun onServiceUnregistered(info: NsdServiceInfo) {
+                    Log.i(TAG, "NSD unregistered: ${info.serviceName}")
+                }
+                override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "NSD unregistration failed: $errorCode")
+                }
             }
-            override fun onServiceUnregistered(info: NsdServiceInfo) {
-                Log.i(TAG, "NSD unregistered")
+            nsdRegistrations.add(listener)
+            try {
+                nsd.registerService(service, NsdManager.PROTOCOL_DNS_SD, listener)
+            } catch (e: Exception) {
+                Log.e(TAG, "registerService failed on ${p}", e)
+                nsdRegistrations.remove(listener)
             }
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "NSD unregistration failed: $errorCode")
-            }
-        }
-        nsdRegistration = listener
-        try {
-            nsd.registerService(service, NsdManager.PROTOCOL_DNS_SD, listener)
-        } catch (e: Exception) {
-            Log.e(TAG, "registerService failed", e)
-            nsdRegistration = null
-            nsdManager = null
         }
     }
 
     private fun unregisterNsd() {
-        nsdRegistration?.let { listener ->
+        nsdRegistrations.forEach { listener ->
             try { nsdManager?.unregisterService(listener) }
             catch (e: Exception) { Log.w(TAG, "unregisterService", e) }
         }
-        nsdRegistration = null
+        nsdRegistrations.clear()
         nsdManager = null
     }
 
@@ -184,7 +191,7 @@ class ComputeDaemonService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("USB AI Compute Node")
-            .setContentText("Daemon active — listening on :${PORT}")
+            .setContentText("Cluster simulator: 2 nodes on :${PORTS.joinToString(" :")}")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
