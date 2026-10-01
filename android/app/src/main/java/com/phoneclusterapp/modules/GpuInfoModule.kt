@@ -17,7 +17,7 @@ class GpuInfoModule : ComputeModule {
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
             if (display == EGL14.EGL_NO_DISPLAY) throw RuntimeException("no_display")
             val ver = IntArray(2)
-            if (!EGL14.eglInitialize(display, ver, 0)) throw RuntimeException("egl_init")
+            if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) throw RuntimeException("egl_init")
             val cfgAttr = intArrayOf(
                 EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
                 EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
