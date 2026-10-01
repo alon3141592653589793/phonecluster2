@@ -213,10 +213,17 @@ class ClusterConsoleActivity : AppCompatActivity() {
                     c.outputStream.use {
                         it.write(JSONObject().put("prompt", prompt).put("n_predict", 128).toString().toByteArray())
                     }
-                    val raw = c.inputStream.bufferedReader().use { it.readText() }
+                    val raw = try {
+                        c.inputStream.bufferedReader().use { it.readText() }
+                    } catch (_: Exception) {
+                        val es = c.errorStream
+                        if (es != null) es.bufferedReader().use { it.readText() } else "HTTP " + c.responseCode
+                    }
                     c.disconnect()
-                    val j = JSONObject(raw)
-                    j.optString("content", j.optString("error", raw))
+                    try {
+                        val j = JSONObject(raw)
+                        j.optString("content", j.optString("error", raw))
+                    } catch (_: Exception) { raw }
                 } catch (e: Exception) { "error: " + e.message }
                 runOnUiThread {
                     log.append("\n" + name + "> " + resp)
@@ -240,8 +247,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 c.outputStream.use {
                     it.write(JSONObject().put("prompt", prompt).put("n_predict", 96).toString().toByteArray())
                 }
-                val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                val raw = try {
+                    c.inputStream.bufferedReader().use { it.readText() }
+                } catch (_: Exception) {
+                    val es = c.errorStream
+                    if (es != null) es.bufferedReader().use { it.readText() } else "HTTP " + c.responseCode
+                }
                 c.disconnect()
+                val j = try { JSONObject(raw) } catch (_: Exception) { JSONObject().put("error", raw) }
                 val results = j.optJSONArray("results")
                 val sb = StringBuilder()
                 if (results != null) for (i in 0 until results.length()) {
