@@ -106,11 +106,11 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
     override fun handle(method: String, uri: String, body: String): ModuleResponse? {
         when (uri) {
             "/v1/cluster/nodes" -> {
-                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "GET") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 return ModuleResponse(body = JSONObject().put("nodes", allNodes(350)).toString())
             }
             "/v1/cluster/info" -> {
-                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "GET") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 val nodes = allNodes(350)
                 var cores = 0; var ram = 0L; var count = 0
                 for (i in 0 until nodes.length()) {
@@ -122,7 +122,7 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                     .put("cluster_cpu_cores", cores).put("cluster_ram_available_mb", ram).put("nodes", nodes).toString())
             }
             "/v1/cluster/completions" -> {
-                if (method != "POST") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                if (method != "POST") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 val req = try { JSONObject(if (body.isBlank()) "{}" else body) } catch (_: Exception) { JSONObject() }
                 val prompt = req.optString("prompt", "")
                 val nPredict = req.optInt("n_predict", req.optInt("max_tokens", 96))
