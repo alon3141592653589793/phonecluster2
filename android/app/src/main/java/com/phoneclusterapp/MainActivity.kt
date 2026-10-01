@@ -35,7 +35,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
     private lateinit var clusterButton: Button
-    private lateinit var clusterMgrButton: Button
     private lateinit var modelButton: Button
     private lateinit var modelStatus: TextView
     private lateinit var infoPreview: TextView
@@ -89,12 +88,6 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, ClusterConsoleActivity::class.java))
             }
         }
-        clusterMgrButton = Button(this).apply {
-            text = "Open Cluster Manager (multi-phone)"
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, ClusterManagerActivity::class.java))
-            }
-        }
 
         val modelLabel = TextView(this).apply {
             text = "Test model"
@@ -135,7 +128,7 @@ class MainActivity : AppCompatActivity() {
 
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton, clusterButton, clusterMgrButton,
+            notifButton, batteryButton, refreshButton, clusterButton,
             modelLabel, modelButton, modelStatus,
             infoLabel, infoPreview, networkLabel, networkView
         ).forEach { root.addView(it) }

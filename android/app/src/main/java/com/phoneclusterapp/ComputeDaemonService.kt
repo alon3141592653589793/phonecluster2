@@ -19,9 +19,6 @@ import androidx.core.app.NotificationCompat
 import com.phoneclusterapp.modules.ComputeHttpServer
 import com.phoneclusterapp.modules.InfoModule
 import com.phoneclusterapp.modules.LlmModule
-import com.phoneclusterapp.modules.CpuModule
-import com.phoneclusterapp.modules.GpuModule
-import com.phoneclusterapp.modules.MemoryModule
 
 class ComputeDaemonService : Service() {
 
@@ -73,15 +70,12 @@ class ComputeDaemonService : Service() {
 
     private fun startServer() {
         if (servers.isNotEmpty()) return
-        val moduleIds = listOf("info_daemon", "llm", "cpu", "gpu", "memory")
+        val moduleIds = listOf("info_daemon", "llm")
         for (port in PORTS) {
             try {
                 val s = ComputeHttpServer(port).apply {
                     register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
                     register(LlmModule(this@ComputeDaemonService))
-                    register(CpuModule())
-                    register(GpuModule())
-                    register(MemoryModule())
                     start(5000, false)
                 }
                 servers.add(s)
