@@ -302,9 +302,13 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.phoneclusterapp.modules.ClusterOrchestratorModule
 import com.phoneclusterapp.modules.ComputeHttpServer
+import com.phoneclusterapp.modules.CpuBenchModule
+import com.phoneclusterapp.modules.GpuInfoModule
 import com.phoneclusterapp.modules.InfoModule
 import com.phoneclusterapp.modules.LlmModule
+import com.phoneclusterapp.modules.MediaModule
 
 class ComputeDaemonService : Service() {
 
@@ -356,12 +360,16 @@ class ComputeDaemonService : Service() {
 
     private fun startServer() {
         if (servers.isNotEmpty()) return
-        val moduleIds = listOf("info_daemon", "llm")
+        val moduleIds = listOf("info_daemon", "llm", "cpu_bench", "gpu_info", "media_info", "cluster")
         for (port in PORTS) {
             try {
                 val s = ComputeHttpServer(port).apply {
                     register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
                     register(LlmModule(this@ComputeDaemonService))
+                    register(CpuBenchModule())
+                    register(GpuInfoModule())
+                    register(MediaModule())
+                    register(ClusterOrchestratorModule(this@ComputeDaemonService))
                     start(5000, false)
                 }
                 servers.add(s)
@@ -847,7 +855,7 @@ class MainActivity : AppCompatActivity() {
   {
     path: "android/app/src/main/java/com/phoneclusterapp/ClusterConsoleActivity.kt",
     lang: "kotlin",
-    description: "Fake-PC cluster console — dispatches prompts to 2 local nodes",
+    description: "Fake-PC cluster console — local nodes + LAN cluster discovery & dispatch",
     content: `package com.phoneclusterapp
 
 import android.graphics.Color
@@ -874,9 +882,12 @@ class ClusterConsoleActivity : AppCompatActivity() {
 
     private val nodes = listOf("Node A" to 8080, "Node B" to 8081)
     private lateinit var nodeViews: List<TextView>
+    private lateinit var clusterView: TextView
     private lateinit var log: TextView
     private lateinit var input: EditText
-    private lateinit var send: Button
+    private lateinit var sendBoth: Button
+    private lateinit var sendCluster: Button
+    private lateinit var discoverBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -917,6 +928,28 @@ class ClusterConsoleActivity : AppCompatActivity() {
         }
         root.addView(nodesRow)
 
+        root.addView(TextView(this).apply {
+            text = "Cluster (LAN discovery)"
+            textSize = 13f
+            setPadding(0, pad / 2, 0, pad / 4)
+        })
+        clusterView = TextView(this).apply {
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            text = "(tap Discover)"
+            setBackgroundColor(Color.parseColor("#111316"))
+            setTextColor(Color.parseColor("#cfc"))
+        }
+        root.addView(clusterView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        discoverBtn = Button(this).apply {
+            text = "Discover cluster nodes"
+            setOnClickListener { discoverCluster() }
+        }
+        root.addView(discoverBtn)
+
         log = TextView(this).apply {
             textSize = 12f
             typeface = Typeface.MONOSPACE
@@ -936,21 +969,32 @@ class ClusterConsoleActivity : AppCompatActivity() {
         ))
 
         input = EditText(this).apply { hint = "Prompt"; setSingleLine(true) }
-        send = Button(this).apply { text = "Send to both" }
+        sendBoth = Button(this).apply { text = "Send to both" }
+        sendCluster = Button(this).apply { text = "Send to cluster" }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, pad, 0, 0)
         }
         bar.addView(input, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        bar.addView(send)
+        val btnCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        btnCol.addView(sendBoth)
+        btnCol.addView(sendCluster)
+        bar.addView(btnCol)
         root.addView(bar)
 
-        send.setOnClickListener {
-            val prompt = input.text.toString().trim()
-            if (prompt.isEmpty()) return@setOnClickListener
+        sendBoth.setOnClickListener {
+            val p = input.text.toString().trim()
+            if (p.isEmpty()) return@setOnClickListener
             input.setText("")
-            log.append("\\nyou> " + prompt)
-            dispatch(prompt)
+            log.append("\\nyou> " + p)
+            dispatchLocal(p)
+        }
+        sendCluster.setOnClickListener {
+            val p = input.text.toString().trim()
+            if (p.isEmpty()) return@setOnClickListener
+            input.setText("")
+            log.append("\\nyou(cluster)> " + p)
+            dispatchCluster(p)
         }
 
         setContentView(root)
@@ -984,8 +1028,8 @@ class ClusterConsoleActivity : AppCompatActivity() {
         }
     }
 
-    private fun dispatch(prompt: String) {
-        send.isEnabled = false
+    private fun dispatchLocal(prompt: String) {
+        sendBoth.isEnabled = false; sendCluster.isEnabled = false
         val done = java.util.concurrent.atomic.AtomicInteger(0)
         nodes.forEachIndexed { _, entry ->
             val (name, port) = entry
@@ -1007,7 +1051,7 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 } catch (e: Exception) { "error: " + e.message }
                 runOnUiThread {
                     log.append("\\n" + name + "> " + resp)
-                    if (done.incrementAndGet() == nodes.size) send.isEnabled = true
+                    if (done.incrementAndGet() == nodes.size) { sendBoth.isEnabled = true; sendCluster.isEnabled = true }
                 }
             }.start()
         }
