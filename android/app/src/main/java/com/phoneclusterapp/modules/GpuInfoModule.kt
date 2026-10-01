@@ -55,7 +55,7 @@ class GpuInfoModule : ComputeModule {
             }.toString())
         } catch (e: Exception) {
             return ModuleResponse(status = 200, body = JSONObject().apply {
-                put("module", "gpu_info"); put("error", "gpu_unavailable"); put("detail", e.message ?: "")
+                put("module", "gpu_info"); put("error_code", "GPU_UNAVAILABLE"); put("error", "gpu_unavailable"); put("detail", e.message ?: "")
             }.toString())
         } finally {
             try { if (display != EGL14.EGL_NO_DISPLAY) EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) } catch (_: Exception) {}
