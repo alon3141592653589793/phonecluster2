@@ -29,9 +29,26 @@ class ClusterConsoleActivity : AppCompatActivity() {
     private lateinit var sendBoth: Button
     private lateinit var sendCluster: Button
     private lateinit var discoverBtn: Button
+    private var consoleReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            buildConsole()
+            consoleReady = true
+        } catch (e: Exception) {
+            android.util.Log.e("ClusterConsole", "CONSOLE_INIT_FAILED", e)
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setContentView(TextView(this).apply {
+                text = "Cluster console could not open\n\nerror_code: CONSOLE_INIT_FAILED\nerror: " +
+                    (e.message ?: e.javaClass.simpleName) + "\n\nReturn to the main screen and retry."
+                setPadding(pad, pad, pad, pad)
+                setTextIsSelectable(true)
+            })
+        }
+    }
+
+    private fun buildConsole() {
         val dp = resources.displayMetrics.density
         val pad = (16 * dp).toInt()
 
@@ -80,7 +97,7 @@ class ClusterConsoleActivity : AppCompatActivity() {
             setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
             text = "(tap Discover)"
             setBackgroundColor(Color.parseColor("#111316"))
-            setTextColor(Color.parseColor("#cfc"))
+            setTextColor(Color.parseColor("#ccffcc"))
         }
         root.addView(clusterView, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -142,7 +159,7 @@ class ClusterConsoleActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        refreshNodes()
+        if (consoleReady) refreshNodes()
     }
 
     private fun refreshNodes() {
