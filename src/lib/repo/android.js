@@ -150,6 +150,10 @@ dependencies {
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".ClusterConsoleActivity"
+            android:exported="false" />
+
         <service
             android:name=".ComputeDaemonService"
             android:exported="false"

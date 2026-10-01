@@ -313,6 +313,9 @@ class ComputeDaemonService : Service() {
         private const val CHANNEL_ID = "compute_node"
         private const val NOTIFICATION_ID = 42
         const val PORT = 8080
+        // Cluster simulator: run two node instances on one phone so a single
+        // device can stand in for two phones + a PC (no real PC needed).
+        val PORTS = listOf(8080, 8081)
 
         // Lightweight, queryable from the UI without binding to the service.
         @Volatile
@@ -322,10 +325,10 @@ class ComputeDaemonService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private var server: ComputeHttpServer? = null
+    private val servers = mutableListOf<ComputeHttpServer>()
     private var startTimeMs = 0L
     private var nsdManager: NsdManager? = null
-    private var nsdRegistration: NsdManager.RegistrationListener? = null
+    private val nsdRegistrations = mutableListOf<NsdManager.RegistrationListener>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -352,28 +355,30 @@ class ComputeDaemonService : Service() {
     }
 
     private fun startServer() {
-        if (server != null) return
-        try {
-            val moduleIds = listOf("info_daemon", "llm")
-            val s = ComputeHttpServer(PORT).apply {
-                register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
-                register(LlmModule(this@ComputeDaemonService))
-                start(5000, false)
+        if (servers.isNotEmpty()) return
+        val moduleIds = listOf("info_daemon", "llm")
+        for (port in PORTS) {
+            try {
+                val s = ComputeHttpServer(port).apply {
+                    register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
+                    register(LlmModule(this@ComputeDaemonService))
+                    start(5000, false)
+                }
+                servers.add(s)
+                Log.i(TAG, "HTTP server on 0.0.0.0:\${port}  modules=\${s.registeredModuleIds}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start HTTP server on \${port}", e)
             }
-            server = s
-            Log.i(TAG, "HTTP server on 0.0.0.0:\${PORT}  modules=\${s.registeredModuleIds}")
-            registerNsd()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start HTTP server", e)
         }
+        registerNsd()
     }
 
     private fun stopServer() {
         unregisterNsd()
-        server?.let {
-            try { it.stop() } catch (e: Exception) { Log.w(TAG, "server.stop()", e) }
+        for (s in servers) {
+            try { s.stop() } catch (e: Exception) { Log.w(TAG, "server.stop()", e) }
         }
-        server = null
+        servers.clear()
     }
 
     /**
@@ -383,7 +388,7 @@ class ComputeDaemonService : Service() {
      * share the network.
      */
     private fun registerNsd() {
-        if (nsdRegistration != null) return
+        if (nsdRegistrations.isNotEmpty()) return
         val nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
         nsdManager = nsd
         val shortId = try {
@@ -391,41 +396,43 @@ class ComputeDaemonService : Service() {
                 contentResolver, android.provider.Settings.Secure.ANDROID_ID
             )?.take(6) ?: ""
         } catch (e: Exception) { "" }
-        val service = NsdServiceInfo().apply {
-            serviceName = if (shortId.isNotEmpty()) "PhoneCluster-Node-\${shortId}" else "PhoneCluster-Node"
-            serviceType = "_http._tcp."
-            port = PORT
-        }
-        val listener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(info: NsdServiceInfo) {
-                Log.i(TAG, "NSD registered: \${info.serviceName} :\${info.port}")
+        PORTS.forEachIndexed { i, p ->
+            val suffix = if (shortId.isNotEmpty()) "\${shortId}-\${'A' + i}" else "\${'A' + i}"
+            val service = NsdServiceInfo().apply {
+                serviceName = "PhoneCluster-Node-\${suffix}"
+                serviceType = "_http._tcp."
+                port = p
             }
-            override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "NSD registration failed: \$errorCode")
+            val listener = object : NsdManager.RegistrationListener {
+                override fun onServiceRegistered(info: NsdServiceInfo) {
+                    Log.i(TAG, "NSD registered: \${info.serviceName} :\${info.port}")
+                }
+                override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                    Log.e(TAG, "NSD registration failed: \$errorCode")
+                }
+                override fun onServiceUnregistered(info: NsdServiceInfo) {
+                    Log.i(TAG, "NSD unregistered: \${info.serviceName}")
+                }
+                override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "NSD unregistration failed: \$errorCode")
+                }
             }
-            override fun onServiceUnregistered(info: NsdServiceInfo) {
-                Log.i(TAG, "NSD unregistered")
+            nsdRegistrations.add(listener)
+            try {
+                nsd.registerService(service, NsdManager.PROTOCOL_DNS_SD, listener)
+            } catch (e: Exception) {
+                Log.e(TAG, "registerService failed on \${p}", e)
+                nsdRegistrations.remove(listener)
             }
-            override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.w(TAG, "NSD unregistration failed: \$errorCode")
-            }
-        }
-        nsdRegistration = listener
-        try {
-            nsd.registerService(service, NsdManager.PROTOCOL_DNS_SD, listener)
-        } catch (e: Exception) {
-            Log.e(TAG, "registerService failed", e)
-            nsdRegistration = null
-            nsdManager = null
         }
     }
 
     private fun unregisterNsd() {
-        nsdRegistration?.let { listener ->
+        nsdRegistrations.forEach { listener ->
             try { nsdManager?.unregisterService(listener) }
             catch (e: Exception) { Log.w(TAG, "unregisterService", e) }
         }
-        nsdRegistration = null
+        nsdRegistrations.clear()
         nsdManager = null
     }
 
@@ -470,7 +477,7 @@ class ComputeDaemonService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("USB AI Compute Node")
-            .setContentText("Daemon active — listening on :\${PORT}")
+            .setContentText("Cluster simulator: 2 nodes on :\${PORTS.joinToString(" :")}")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setContentIntent(pendingIntent)
@@ -530,6 +537,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var notifButton: Button
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
+    private lateinit var clusterButton: Button
     private lateinit var modelButton: Button
     private lateinit var modelStatus: TextView
     private lateinit var infoPreview: TextView
@@ -577,6 +585,12 @@ class MainActivity : AppCompatActivity() {
             text = "Refresh /v1/info"
             setOnClickListener { refreshInfo() }
         }
+        clusterButton = Button(this).apply {
+            text = "Open Cluster Console (fake PC)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, ClusterConsoleActivity::class.java))
+            }
+        }
 
         val modelLabel = TextView(this).apply {
             text = "Test model"
@@ -617,7 +631,7 @@ class MainActivity : AppCompatActivity() {
 
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton,
+            notifButton, batteryButton, refreshButton, clusterButton,
             modelLabel, modelButton, modelStatus,
             infoLabel, infoPreview, networkLabel, networkView
         ).forEach { root.addView(it) }
@@ -826,6 +840,177 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         refreshPermissionLabels()
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/ClusterConsoleActivity.kt",
+    lang: "kotlin",
+    description: "Fake-PC cluster console — dispatches prompts to 2 local nodes",
+    content: `package com.phoneclusterapp
+
+import android.graphics.Color
+import android.graphics.Typeface
+import android.os.Bundle
+import android.view.Gravity
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
+
+/**
+ * In-app "fake PC": simulates a PC orchestrator talking to two compute nodes
+ * running on this same phone (ports 8080 and 8081). Discover nodes, dispatch a
+ * prompt to both, compare responses — with no PC attached.
+ * Requires the daemon to be running (it starts both node instances).
+ */
+class ClusterConsoleActivity : AppCompatActivity() {
+
+    private val nodes = listOf("Node A" to 8080, "Node B" to 8081)
+    private lateinit var nodeViews: List<TextView>
+    private lateinit var log: TextView
+    private lateinit var input: EditText
+    private lateinit var send: Button
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val dp = resources.displayMetrics.density
+        val pad = (16 * dp).toInt()
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+
+        root.addView(TextView(this).apply {
+            text = "Cluster Console (fake PC)"
+            textSize = 20f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, pad)
+        })
+        root.addView(TextView(this).apply {
+            text = "Start the daemon on the main screen first — it runs 2 nodes on this phone."
+            textSize = 12f
+            setPadding(0, 0, 0, pad)
+        })
+
+        val nodesRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 0, 0, pad)
+        }
+        nodeViews = nodes.map { entry ->
+            val (name, port) = entry
+            TextView(this).apply {
+                textSize = 11f
+                typeface = Typeface.MONOSPACE
+                setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+                text = name + "\\n:" + port + "\\n(checking…)"
+            }.also { tv ->
+                nodesRow.addView(tv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            }
+        }
+        root.addView(nodesRow)
+
+        log = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+            text = "(send a prompt to dispatch to both nodes)"
+            setBackgroundColor(Color.parseColor("#1a1a1a"))
+            setTextColor(Color.parseColor("#e8e6e1"))
+        }
+        val scroll = ScrollView(this).apply {
+            addView(log, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        root.addView(scroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+
+        input = EditText(this).apply { hint = "Prompt"; setSingleLine(true) }
+        send = Button(this).apply { text = "Send to both" }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, pad, 0, 0)
+        }
+        bar.addView(input, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(send)
+        root.addView(bar)
+
+        send.setOnClickListener {
+            val prompt = input.text.toString().trim()
+            if (prompt.isEmpty()) return@setOnClickListener
+            input.setText("")
+            log.append("\\nyou> " + prompt)
+            dispatch(prompt)
+        }
+
+        setContentView(root)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshNodes()
+    }
+
+    private fun refreshNodes() {
+        nodes.forEachIndexed { i, entry ->
+            val (name, port) = entry
+            Thread {
+                val info = try {
+                    val c = URL("http://127.0.0.1:" + port + "/v1/info").openConnection() as HttpURLConnection
+                    c.connectTimeout = 1200
+                    c.readTimeout = 1200
+                    try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
+                } catch (e: Exception) { null }
+                runOnUiThread {
+                    nodeViews[i].text = if (info != null) {
+                        name + " :" + port + "\\n" + info.optString("device_model", "?") +
+                            " · " + info.optInt("cpu_cores") + " cores\\n" +
+                            "ram " + info.optLong("ram_available_mb") + " MB free"
+                    } else {
+                        name + " :" + port + "\\noffline (start daemon)"
+                    }
+                }
+            }.start()
+        }
+    }
+
+    private fun dispatch(prompt: String) {
+        send.isEnabled = false
+        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        nodes.forEachIndexed { _, entry ->
+            val (name, port) = entry
+            Thread {
+                val resp = try {
+                    val c = URL("http://127.0.0.1:" + port + "/v1/completions").openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.connectTimeout = 30000
+                    c.readTimeout = 60000
+                    c.doOutput = true
+                    c.outputStream.use {
+                        it.write(JSONObject().put("prompt", prompt).put("n_predict", 128).toString().toByteArray())
+                    }
+                    val raw = c.inputStream.bufferedReader().use { it.readText() }
+                    c.disconnect()
+                    val j = JSONObject(raw)
+                    j.optString("content", j.optString("error", raw))
+                } catch (e: Exception) { "error: " + e.message }
+                runOnUiThread {
+                    log.append("\\n" + name + "> " + resp)
+                    if (done.incrementAndGet() == nodes.size) send.isEnabled = true
+                }
+            }.start()
+        }
     }
 }
 `,
