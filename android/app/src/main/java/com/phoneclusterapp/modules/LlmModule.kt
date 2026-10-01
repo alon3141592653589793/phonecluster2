@@ -33,11 +33,12 @@ class LlmModule(private val context: Context) : ComputeModule {
     override fun handle(method: String, uri: String, body: String): ModuleResponse? {
         if (uri != "/v1/completions" && uri != "/v1/chat/completions") return null
         if (method != "POST") {
-            return ModuleResponse(status = 405, body = JSONObject().put("error", "method_not_allowed").toString())
+            return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
         }
         synchronized(lock) {
             if (!ensureLoaded()) {
                 return ModuleResponse(status = 503, body = JSONObject().apply {
+                    put("error_code", "MODEL_NOT_LOADED")
                     put("error", "model_not_loaded")
                     put("detail", "Tap 'Install test model' in the app, then retry.")
                 }.toString())
@@ -54,6 +55,7 @@ class LlmModule(private val context: Context) : ComputeModule {
                 }.toString())
             } catch (e: Exception) {
                 ModuleResponse(status = 500, body = JSONObject().apply {
+                    put("error_code", "INFERENCE_FAILED")
                     put("error", "inference_failed")
                     put("detail", e.message ?: "")
                 }.toString())
