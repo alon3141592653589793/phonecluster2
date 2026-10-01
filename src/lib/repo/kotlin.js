@@ -30,7 +30,8 @@ interface ComputeModule {
 data class ModuleResponse(
     val status: Int = 200,
     val mimeType: String = "application/json",
-    val body: String = ""
+    val body: String = "",
+    val bytes: ByteArray? = null
 )
 `,
   },
@@ -258,7 +259,11 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
             val result = module.handle(method, uri, body)
             if (result != null) {
                 val status = Response.Status.lookup(result.status) ?: Response.Status.OK
-                val resp = newFixedLengthResponse(status, result.mimeType, result.body)
+                val resp = if (result.bytes != null) {
+                    newFixedLengthResponse(status, result.mimeType, java.io.ByteArrayInputStream(result.bytes), result.bytes.size.toLong())
+                } else {
+                    newFixedLengthResponse(status, result.mimeType, result.body)
+                }
                 addCorsHeaders(resp)
                 return resp
             }
@@ -305,6 +310,9 @@ import androidx.core.app.NotificationCompat
 import com.phoneclusterapp.modules.ComputeHttpServer
 import com.phoneclusterapp.modules.InfoModule
 import com.phoneclusterapp.modules.LlmModule
+import com.phoneclusterapp.modules.CpuModule
+import com.phoneclusterapp.modules.GpuModule
+import com.phoneclusterapp.modules.MemoryModule
 
 class ComputeDaemonService : Service() {
 
@@ -356,12 +364,15 @@ class ComputeDaemonService : Service() {
 
     private fun startServer() {
         if (servers.isNotEmpty()) return
-        val moduleIds = listOf("info_daemon", "llm")
+        val moduleIds = listOf("info_daemon", "llm", "cpu", "gpu", "memory")
         for (port in PORTS) {
             try {
                 val s = ComputeHttpServer(port).apply {
                     register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
                     register(LlmModule(this@ComputeDaemonService))
+                    register(CpuModule())
+                    register(GpuModule())
+                    register(MemoryModule())
                     start(5000, false)
                 }
                 servers.add(s)
@@ -538,6 +549,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var batteryButton: Button
     private lateinit var refreshButton: Button
     private lateinit var clusterButton: Button
+    private lateinit var clusterMgrButton: Button
     private lateinit var modelButton: Button
     private lateinit var modelStatus: TextView
     private lateinit var infoPreview: TextView
@@ -591,6 +603,12 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, ClusterConsoleActivity::class.java))
             }
         }
+        clusterMgrButton = Button(this).apply {
+            text = "Open Cluster Manager (multi-phone)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, ClusterManagerActivity::class.java))
+            }
+        }
 
         val modelLabel = TextView(this).apply {
             text = "Test model"
@@ -631,7 +649,7 @@ class MainActivity : AppCompatActivity() {
 
         listOf(
             title, statusView, portView, toggleButton,
-            notifButton, batteryButton, refreshButton, clusterButton,
+            notifButton, batteryButton, refreshButton, clusterButton, clusterMgrButton,
             modelLabel, modelButton, modelStatus,
             infoLabel, infoPreview, networkLabel, networkView
         ).forEach { root.addView(it) }
@@ -1008,6 +1026,381 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 runOnUiThread {
                     log.append("\\n" + name + "> " + resp)
                     if (done.incrementAndGet() == nodes.size) send.isEnabled = true
+                }
+            }.start()
+        }
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/CpuModule.kt",
+    lang: "kotlin",
+    description: "Remote CPU — POST /v1/compute matrix-multiply GFLOPS benchmark",
+    content: `package com.phoneclusterapp.modules
+
+import org.json.JSONObject
+
+/**
+ * Remote CPU: POST /v1/compute runs an N×N double-precision matrix multiply and
+ * reports sustained GFLOPS, so a PC or another phone can treat this device as a
+ * remote CPU and benchmark it.
+ */
+class CpuModule : ComputeModule {
+
+    override val id = "cpu"
+
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (uri != "/v1/compute") return null
+        if (method != "POST") {
+            return ModuleResponse(status = 405, body = JSONObject().put("error", "method_not_allowed").toString())
+        }
+        val req = try { JSONObject(if (body.isBlank()) "{}" else body) } catch (e: Exception) { JSONObject() }
+        val n = req.optInt("size", 256).coerceIn(16, 1024)
+        val a = Array(n) { DoubleArray(n) { Math.random() } }
+        val b = Array(n) { DoubleArray(n) { Math.random() } }
+        val c = Array(n) { DoubleArray(n) }
+        val t0 = System.nanoTime()
+        for (i in 0 until n) {
+            for (j in 0 until n) {
+                var s = 0.0
+                for (k in 0 until n) s += a[i][k] * b[k][j]
+                c[i][j] = s
+            }
+        }
+        val ms = (System.nanoTime() - t0) / 1000000.0
+        val flops = 2L * n * n * n
+        val gflops = flops / ms / 1000000.0
+        return ModuleResponse(body = JSONObject().apply {
+            put("module", id)
+            put("size", n)
+            put("ms", Math.round(ms * 1000.0) / 1000.0)
+            put("gflops", Math.round(gflops * 1000.0) / 1000.0)
+            put("cores", Runtime.getRuntime().availableProcessors())
+        }.toString())
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/GpuModule.kt",
+    lang: "kotlin",
+    description: "Remote GPU/graphics — GET /v1/render returns a Mandelbrot PNG",
+    content: `package com.phoneclusterapp.modules
+
+import android.graphics.Bitmap
+import android.graphics.Color
+import java.io.ByteArrayOutputStream
+import org.json.JSONObject
+
+/**
+ * Remote GPU/graphics: GET /v1/render rasterizes a 256×256 Mandelbrot fractal
+ * and returns it as PNG. A first step toward exposing the device's rendering
+ * hardware as a remote graphics endpoint (a GPU/NPU rasterizer can replace the
+ * CPU loop later).
+ */
+class GpuModule : ComputeModule {
+
+    override val id = "gpu"
+
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (uri != "/v1/render") return null
+        if (method != "GET") {
+            return ModuleResponse(status = 405, body = JSONObject().put("error", "method_not_allowed").toString())
+        }
+        val w = 256
+        val h = 256
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val maxIter = 128
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val cx = -0.5 + (x - w / 2) * 2.5 / w
+                val cy = (y - h / 2) * 2.5 / h
+                var zx = 0.0
+                var zy = 0.0
+                var iter = 0
+                while (iter < maxIter && zx * zx + zy * zy < 4.0) {
+                    val t = zx * zx - zy * zy + cx
+                    zy = 2 * zx * zy + cy
+                    zx = t
+                    iter++
+                }
+                val color = if (iter == maxIter) Color.BLACK else Color.HSVToColor(floatArrayOf(iter * 360f / maxIter, 1f, 1f))
+                bmp.setPixel(x, y, color)
+            }
+        }
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return ModuleResponse(mimeType = "image/png", bytes = out.toByteArray())
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/MemoryModule.kt",
+    lang: "kotlin",
+    description: "Remote RAM — /v1/memory/<key> key/value store using phone RAM",
+    content: `package com.phoneclusterapp.modules
+
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Remote RAM: a tiny in-memory key/value store. POST a body to
+ * /v1/memory/<key> to stash bytes on this device, GET them back, DELETE to free.
+ * Lets a PC use spare phone RAM as overflow storage. Values live in process
+ * memory and are lost when the daemon stops.
+ */
+class MemoryModule : ComputeModule {
+
+    override val id = "memory"
+    private val store = ConcurrentHashMap<String, ByteArray>()
+
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (!uri.startsWith("/v1/memory")) return null
+        val key = uri.removePrefix("/v1/memory").removePrefix("/")
+        if (method == "GET" && key.isEmpty()) {
+            val total = store.values.sumOf { it.size.toLong() }
+            return ModuleResponse(body = JSONObject().apply {
+                put("module", id)
+                put("keys", JSONArray(Collections.list(store.keys)))
+                put("count", store.size)
+                put("bytes", total)
+            }.toString())
+        }
+        if (key.isEmpty()) {
+            return ModuleResponse(status = 400, body = JSONObject().put("error", "missing_key").toString())
+        }
+        return when (method) {
+            "POST", "PUT" -> {
+                val bytes = body.toByteArray()
+                store[key] = bytes
+                ModuleResponse(body = JSONObject().apply {
+                    put("module", id); put("key", key); put("bytes", bytes.size)
+                }.toString())
+            }
+            "GET" -> {
+                val v = store[key]
+                if (v == null) ModuleResponse(status = 404, body = JSONObject().put("error", "not_found").toString())
+                else ModuleResponse(mimeType = "application/octet-stream", bytes = v)
+            }
+            "DELETE" -> {
+                store.remove(key)
+                ModuleResponse(body = JSONObject().apply {
+                    put("module", id); put("key", key); put("deleted", true)
+                }.toString())
+            }
+            else -> ModuleResponse(status = 405, body = JSONObject().put("error", "method_not_allowed").toString())
+        }
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/ClusterManagerActivity.kt",
+    lang: "kotlin",
+    description: "Multi-phone cluster manager — mDNS discovery + distributed benchmark",
+    content: `package com.phoneclusterapp
+
+import android.content.Context
+import android.graphics.Typeface
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.os.Bundle
+import android.view.Gravity
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
+
+/**
+ * Cluster manager: discovers other PhoneCluster nodes on the LAN via mDNS
+ * (_http._tcp.), pulls /v1/info from each, and shows aggregate cluster capacity
+ * (node count, total cores, total RAM). "Run cluster benchmark" dispatches a
+ * CPU workload to every node and sums sustained GFLOPS — a real multi-phone
+ * cluster compute demo, no PC required.
+ */
+class ClusterManagerActivity : AppCompatActivity() {
+
+    private lateinit var summary: TextView
+    private lateinit var nodeList: TextView
+    private lateinit var benchResult: TextView
+    private lateinit var scanButton: Button
+    private lateinit var benchButton: Button
+
+    private var nsd: NsdManager? = null
+    private var discovery: NsdManager.DiscoveryListener? = null
+    private val nodes = mutableMapOf<String, NodeInfo>()
+
+    private data class NodeInfo(val name: String, val host: String, val port: Int, val info: JSONObject?)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val dp = resources.displayMetrics.density
+        val pad = (16 * dp).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+
+        root.addView(TextView(this).apply {
+            text = "Cluster Manager"
+            textSize = 20f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, pad)
+        })
+        root.addView(TextView(this).apply {
+            text = "Discovers other phones on the LAN via mDNS and aggregates them into one cluster."
+            textSize = 12f
+            setPadding(0, 0, 0, pad)
+        })
+
+        summary = TextView(this).apply {
+            textSize = 13f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, 0, 0, pad / 2)
+            text = "Nodes: 0\\nCores: 0\\nRAM: 0 MB"
+        }
+        root.addView(summary)
+
+        scanButton = Button(this).apply { text = "Scan LAN for nodes"; setOnClickListener { startScan() } }
+        root.addView(scanButton)
+
+        root.addView(TextView(this).apply { text = "Discovered nodes"; textSize = 13f; setPadding(0, pad / 2, 0, 0) })
+        nodeList = TextView(this).apply {
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, pad)
+            text = "(not scanned)"
+        }
+        root.addView(nodeList)
+
+        benchButton = Button(this).apply { text = "Run cluster CPU benchmark"; setOnClickListener { runBenchmark() } }
+        root.addView(benchButton)
+        benchResult = TextView(this).apply {
+            textSize = 12f
+            typeface = Typeface.MONOSPACE
+            setPadding(0, pad / 4, 0, 0)
+            text = "(not run)"
+        }
+        root.addView(benchResult)
+
+        setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopScan()
+    }
+
+    private fun startScan() {
+        stopScan()
+        nodes.clear()
+        nodeList.text = "scanning…"
+        updateSummary()
+        nsd = getSystemService(Context.NSD_SERVICE) as NsdManager
+        discovery = object : NsdManager.DiscoveryListener {
+            override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) { nodeList.text = "discovery failed: " + errorCode }
+            override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
+            override fun onDiscoveryStarted(serviceType: String?) {}
+            override fun onDiscoveryStopped(serviceType: String?) {}
+            override fun onServiceFound(info: NsdServiceInfo) {
+                if (info.serviceName?.startsWith("PhoneCluster-Node") != true) return
+                resolve(info)
+            }
+            override fun onServiceLost(info: NsdServiceInfo) {
+                nodes.remove(info.serviceName)
+                runOnUiThread { renderNodes() }
+            }
+        }
+        try {
+            nsd!!.discoverServices("_http._tcp.", NsdManager.PROTOCOL_DNS_SD, discovery!!)
+        } catch (e: Exception) {
+            nodeList.text = "error: " + e.message
+        }
+    }
+
+    private fun stopScan() {
+        try { discovery?.let { nsd?.stopServiceDiscovery(it) } } catch (e: Exception) {}
+        discovery = null
+    }
+
+    private fun resolve(info: NsdServiceInfo) {
+        val listener = object : NsdManager.ResolveListener {
+            override fun onServiceResolved(svc: NsdServiceInfo) {
+                val host = svc.host?.hostAddress ?: return
+                fetchInfo(svc.serviceName ?: "node", host, svc.port)
+            }
+            override fun onResolveFailed(p0: NsdServiceInfo?, p1: Int) {}
+        }
+        try { nsd?.resolveService(info, listener) } catch (e: Exception) {}
+    }
+
+    private fun fetchInfo(name: String, host: String, port: Int) {
+        Thread {
+            val info = try {
+                val c = URL("http://" + host + ":" + port + "/v1/info").openConnection() as HttpURLConnection
+                c.connectTimeout = 1500
+                c.readTimeout = 1500
+                try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
+            } catch (e: Exception) { null }
+            nodes[name] = NodeInfo(name, host, port, info)
+            runOnUiThread { renderNodes(); updateSummary() }
+        }.start()
+    }
+
+    private fun renderNodes() {
+        nodeList.text = if (nodes.isEmpty()) {
+            "(none found — start the daemon on other phones on the same Wi-Fi)"
+        } else {
+            nodes.values.joinToString("\\n\\n") { n ->
+                val i = n.info
+                val mods = i?.optJSONArray("modules")?.let { arr -> (0 until arr.length()).joinToString(",") { idx -> arr.optString(idx) } } ?: "?"
+                n.name + "  " + n.host + ":" + n.port + "\\n" +
+                    (i?.optString("device_model") ?: "?") + " · " + (i?.optInt("cpu_cores") ?: 0) + " cores · " +
+                    (i?.optLong("ram_available_mb") ?: 0L) + " MB free\\nmodules: " + mods
+            }
+        }
+    }
+
+    private fun updateSummary() {
+        val totalCores = nodes.values.sumOf { it.info?.optInt("cpu_cores") ?: 0 }
+        val totalRam = nodes.values.sumOf { it.info?.optLong("ram_available_mb") ?: 0L }
+        summary.text = "Nodes: " + nodes.size + "\\nCores: " + totalCores + "\\nRAM: " + totalRam + " MB free"
+    }
+
+    private fun runBenchmark() {
+        if (nodes.isEmpty()) { benchResult.text = "scan first (no nodes)"; return }
+        benchButton.isEnabled = false
+        benchResult.text = "dispatching to " + nodes.size + " nodes…"
+        val total = java.util.concurrent.atomic.AtomicDouble(0.0)
+        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        for (n in nodes.values) {
+            Thread {
+                val gf = try {
+                    val c = URL("http://" + n.host + ":" + n.port + "/v1/compute").openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.connectTimeout = 60000
+                    c.readTimeout = 60000
+                    c.doOutput = true
+                    c.outputStream.use { it.write(JSONObject().put("size", 256).toString().toByteArray()) }
+                    val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                    c.disconnect()
+                    j.optDouble("gflops", 0.0)
+                } catch (e: Exception) { 0.0 }
+                total.addAndGet(gf)
+                if (done.incrementAndGet() == nodes.size) {
+                    runOnUiThread {
+                        benchResult.text = "Cluster total: " + "%.3f".format(total.get()) + " GFLOPS across " + nodes.size + " nodes"
+                        benchButton.isEnabled = true
+                    }
                 }
             }.start()
         }

@@ -154,6 +154,10 @@ dependencies {
             android:name=".ClusterConsoleActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ClusterManagerActivity"
+            android:exported="false" />
+
         <service
             android:name=".ComputeDaemonService"
             android:exported="false"
