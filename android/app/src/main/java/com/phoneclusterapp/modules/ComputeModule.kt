@@ -25,5 +25,6 @@ interface ComputeModule {
 data class ModuleResponse(
     val status: Int = 200,
     val mimeType: String = "application/json",
-    val body: String = ""
+    val body: String = "",
+    val bytes: ByteArray? = null
 )
