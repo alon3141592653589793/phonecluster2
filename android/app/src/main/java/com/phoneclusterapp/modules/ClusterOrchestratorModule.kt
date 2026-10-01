@@ -58,7 +58,18 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                 c.requestMethod = "POST"; c.setRequestProperty("Content-Type", "application/json"); c.doOutput = true
                 c.outputStream.use { it.write(postBody.toByteArray()) }
             }
-            try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
+            val raw = try {
+                c.inputStream.bufferedReader().use { it.readText() }
+            } catch (_: Exception) {
+                val es = c.errorStream
+                if (es != null) {
+                    es.bufferedReader().use { it.readText() }
+                } else {
+                    c.disconnect()
+                    return null
+                }
+            }
+            try { JSONObject(raw) } catch (_: Exception) { null } finally { c.disconnect() }
         } catch (_: Exception) { null }
     }
 
