@@ -1044,10 +1044,17 @@ class ClusterConsoleActivity : AppCompatActivity() {
                     c.outputStream.use {
                         it.write(JSONObject().put("prompt", prompt).put("n_predict", 128).toString().toByteArray())
                     }
-                    val raw = c.inputStream.bufferedReader().use { it.readText() }
+                    val raw = try {
+                        c.inputStream.bufferedReader().use { it.readText() }
+                    } catch (_: Exception) {
+                        val es = c.errorStream
+                        if (es != null) es.bufferedReader().use { it.readText() } else "HTTP " + c.responseCode
+                    }
                     c.disconnect()
-                    val j = JSONObject(raw)
-                    j.optString("content", j.optString("error", raw))
+                    try {
+                        val j = JSONObject(raw)
+                        j.optString("content", j.optString("error", raw))
+                    } catch (_: Exception) { raw }
                 } catch (e: Exception) { "error: " + e.message }
                 runOnUiThread {
                     log.append("\\n" + name + "> " + resp)
@@ -1100,8 +1107,14 @@ class ClusterConsoleActivity : AppCompatActivity() {
                 c.outputStream.use {
                     it.write(JSONObject().put("prompt", prompt).put("n_predict", 96).toString().toByteArray())
                 }
-                val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                val raw = try {
+                    c.inputStream.bufferedReader().use { it.readText() }
+                } catch (_: Exception) {
+                    val es = c.errorStream
+                    if (es != null) es.bufferedReader().use { it.readText() } else "HTTP " + c.responseCode
+                }
                 c.disconnect()
+                val j = try { JSONObject(raw) } catch (_: Exception) { JSONObject().put("error", raw) }
                 val results = j.optJSONArray("results")
                 val sb = StringBuilder()
                 if (results != null) for (i in 0 until results.length()) {
@@ -1197,7 +1210,7 @@ class GpuInfoModule : ComputeModule {
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
             if (display == EGL14.EGL_NO_DISPLAY) throw RuntimeException("no_display")
             val ver = IntArray(2)
-            if (!EGL14.eglInitialize(display, ver, 0)) throw RuntimeException("egl_init")
+            if (!EGL14.eglInitialize(display, ver, 0, ver, 1)) throw RuntimeException("egl_init")
             val cfgAttr = intArrayOf(
                 EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
                 EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
@@ -1361,7 +1374,18 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                 c.doOutput = true
                 c.outputStream.use { it.write(postBody.toByteArray()) }
             }
-            try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
+            val raw = try {
+                c.inputStream.bufferedReader().use { it.readText() }
+            } catch (_: Exception) {
+                val es = c.errorStream
+                if (es != null) {
+                    es.bufferedReader().use { it.readText() }
+                } else {
+                    c.disconnect()
+                    return null
+                }
+            }
+            try { JSONObject(raw) } catch (_: Exception) { null } finally { c.disconnect() }
         } catch (_: Exception) { null }
     }
 
