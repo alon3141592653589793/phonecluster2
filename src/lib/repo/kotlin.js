@@ -1056,6 +1056,401 @@ class ClusterConsoleActivity : AppCompatActivity() {
             }.start()
         }
     }
+
+    private fun discoverCluster() {
+        discoverBtn.isEnabled = false
+        clusterView.text = "scanning LAN…"
+        Thread {
+            try {
+                val c = URL("http://127.0.0.1:8080/v1/cluster/info").openConnection() as HttpURLConnection
+                c.connectTimeout = 8000
+                c.readTimeout = 8000
+                val info = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                c.disconnect()
+                val sb = StringBuilder()
+                sb.append("Nodes: ").append(info.optInt("node_count"))
+                  .append("  cores: ").append(info.optInt("cluster_cpu_cores"))
+                  .append("  ram: ").append(info.optLong("cluster_ram_available_mb")).append(" MB\\n")
+                val ns = info.optJSONArray("nodes")
+                if (ns != null) for (i in 0 until ns.length()) {
+                    val n = ns.optJSONObject(i) ?: continue
+                    val ni = n.optJSONObject("info") ?: JSONObject()
+                    sb.append(if (n.optBoolean("self")) "self " else "peer ")
+                      .append(n.optString("host")).append(":").append(n.optInt("port"))
+                      .append("  ").append(ni.optString("device_model", "?")).append("\\n")
+                }
+                runOnUiThread { clusterView.text = sb.toString().trimEnd(); discoverBtn.isEnabled = true }
+            } catch (e: Exception) {
+                runOnUiThread { clusterView.text = "error: " + e.message; discoverBtn.isEnabled = true }
+            }
+        }.start()
+    }
+
+    private fun dispatchCluster(prompt: String) {
+        sendBoth.isEnabled = false; sendCluster.isEnabled = false
+        log.append("\\n(dispatching to whole cluster…)")
+        Thread {
+            try {
+                val c = URL("http://127.0.0.1:8080/v1/cluster/completions").openConnection() as HttpURLConnection
+                c.requestMethod = "POST"
+                c.setRequestProperty("Content-Type", "application/json")
+                c.connectTimeout = 60000
+                c.readTimeout = 60000
+                c.doOutput = true
+                c.outputStream.use {
+                    it.write(JSONObject().put("prompt", prompt).put("n_predict", 96).toString().toByteArray())
+                }
+                val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                c.disconnect()
+                val results = j.optJSONArray("results")
+                val sb = StringBuilder()
+                if (results != null) for (i in 0 until results.length()) {
+                    val r = results.optJSONObject(i) ?: continue
+                    sb.append("\\n").append(r.optString("host")).append(":").append(r.optInt("port"))
+                      .append(if (r.optBoolean("self")) " (self)" else "").append("> ")
+                      .append(r.optString("content", "?"))
+                }
+                runOnUiThread {
+                    log.append(sb.toString())
+                    sendBoth.isEnabled = true; sendCluster.isEnabled = true
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    log.append("\\ncluster error: " + e.message)
+                    sendBoth.isEnabled = true; sendCluster.isEnabled = true
+                }
+            }
+        }.start()
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/CpuBenchModule.kt",
+    lang: "kotlin",
+    description: "CPU benchmark — parallel matmul GFLOPS",
+    content: `package com.phoneclusterapp.modules
+
+import org.json.JSONObject
+
+/** CPU compute benchmark: parallel matrix-multiply to measure GFLOPS. */
+class CpuBenchModule : ComputeModule {
+    override val id = "cpu_bench"
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (method != "GET" || uri != "/v1/cpu/bench") return null
+        val n = 160
+        val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val a = FloatArray(n * n) { (it % 7) - 3f }
+        val b = FloatArray(n * n) { (it % 5) - 2f }
+        val c = FloatArray(n * n)
+        val perThread = (n + cores - 1) / cores
+        val start = System.nanoTime()
+        val threads = (0 until cores).map { t ->
+            Thread {
+                val r0 = t * perThread
+                val r1 = minOf(r0 + perThread, n)
+                for (i in r0 until r1) for (j in 0 until n) {
+                    var s = 0f
+                    for (k in 0 until n) s += a[i * n + k] * b[k * n + j]
+                    c[i * n + j] = s
+                }
+            }.also { it.start() }
+        }
+        threads.forEach { it.join() }
+        val ms = (System.nanoTime() - start) / 1e6
+        val flops = 2.0 * n * n * n
+        val gflops = if (ms > 0) flops / (ms / 1000.0) / 1e9 else 0.0
+        var sum = 0.0
+        for (v in c) sum += v
+        return ModuleResponse(body = JSONObject().apply {
+            put("module", "cpu_bench")
+            put("matrix_size", n)
+            put("cores_used", cores)
+            put("time_ms", ms)
+            put("gflops", gflops)
+            put("checksum", sum.toLong())
+        }.toString())
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/GpuInfoModule.kt",
+    lang: "kotlin",
+    description: "GPU probe — EGL/GLES renderer + clear benchmark",
+    content: `package com.phoneclusterapp.modules
+
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.GLES20
+import org.json.JSONObject
+
+/** GPU probe: EGL/GLES renderer + a clear-rate benchmark. */
+class GpuInfoModule : ComputeModule {
+    override val id = "gpu_info"
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (method != "GET" || uri != "/v1/gpu/info") return null
+        var display = EGL14.EGL_NO_DISPLAY
+        var context = EGL14.EGL_NO_CONTEXT
+        var surface = EGL14.EGL_NO_SURFACE
+        try {
+            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+            if (display == EGL14.EGL_NO_DISPLAY) throw RuntimeException("no_display")
+            val ver = IntArray(2)
+            if (!EGL14.eglInitialize(display, ver, 0)) throw RuntimeException("egl_init")
+            val cfgAttr = intArrayOf(
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_NONE
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val num = IntArray(1)
+            if (!EGL14.eglChooseConfig(display, cfgAttr, 0, configs, 0, 1, num, 0) || num[0] == 0)
+                throw RuntimeException("no_config")
+            val surfAttr = intArrayOf(EGL14.EGL_WIDTH, 64, EGL14.EGL_HEIGHT, 64, EGL14.EGL_NONE)
+            surface = EGL14.eglCreatePbufferSurface(display, configs[0], surfAttr, 0)
+            if (surface == EGL14.EGL_NO_SURFACE) throw RuntimeException("no_surface")
+            val ctxAttr = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+            context = EGL14.eglCreateContext(display, configs[0], EGL14.EGL_NO_CONTEXT, ctxAttr, 0)
+            if (context == EGL14.EGL_NO_CONTEXT) throw RuntimeException("no_context")
+            EGL14.eglMakeCurrent(display, surface, surface, context)
+            val renderer = GLES20.glGetString(GLES20.GL_RENDERER) ?: "unknown"
+            val vendor = GLES20.glGetString(GLES20.GL_VENDOR) ?: "unknown"
+            val version = GLES20.glGetString(GLES20.GL_VERSION) ?: "unknown"
+            val exts = GLES20.glGetString(GLES20.GL_EXTENSIONS) ?: ""
+            val iters = 2000
+            val s = System.nanoTime()
+            for (i in 0 until iters) {
+                GLES20.glClearColor((i and 255) / 255f, 0.2f, 0.3f, 1f)
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            }
+            GLES20.glFinish()
+            val ms = (System.nanoTime() - s) / 1e6
+            val cps = if (ms > 0) iters / (ms / 1000.0) else 0.0
+            return ModuleResponse(body = JSONObject().apply {
+                put("module", "gpu_info")
+                put("renderer", renderer)
+                put("vendor", vendor)
+                put("gles_version", version)
+                put("extensions_count", exts.split(" ").filter { it.isNotBlank() }.size)
+                put("clear_bench_iters", iters)
+                put("clear_bench_ms", ms)
+                put("clears_per_sec", cps)
+            }.toString())
+        } catch (e: Exception) {
+            return ModuleResponse(status = 200, body = JSONObject().apply {
+                put("module", "gpu_info")
+                put("error", "gpu_unavailable")
+                put("detail", e.message ?: "")
+            }.toString())
+        } finally {
+            try { if (display != EGL14.EGL_NO_DISPLAY) EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT) } catch (_: Exception) {}
+            try { if (context != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(display, context) } catch (_: Exception) {}
+            try { if (surface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(display, surface) } catch (_: Exception) {}
+        }
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/MediaModule.kt",
+    lang: "kotlin",
+    description: "Media probe — hardware codec enumeration",
+    content: `package com.phoneclusterapp.modules
+
+import android.media.MediaCodecList
+import org.json.JSONArray
+import org.json.JSONObject
+
+/** Media probe: enumerate hardware/software codecs (encoders + decoders). */
+class MediaModule : ComputeModule {
+    override val id = "media_info"
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        if (method != "GET" || uri != "/v1/media/info") return null
+        val mcl = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+        val arr = JSONArray()
+        var hwEnc = 0; var swEnc = 0; var hwDec = 0; var swDec = 0
+        for (info in mcl.codecInfos) {
+            val hw = !info.name.startsWith("OMX.") && !info.name.contains("c2.android") && !info.name.contains("c2.soft")
+            if (info.isEncoder) { if (hw) hwEnc++ else swEnc++ } else { if (hw) hwDec++ else swDec++ }
+            val types = JSONArray()
+            for (t in info.supportedTypes) types.put(t)
+            arr.put(JSONObject().apply {
+                put("name", info.name)
+                put("is_encoder", info.isEncoder)
+                put("hardware", hw)
+                put("types", types)
+            })
+        }
+        return ModuleResponse(body = JSONObject().apply {
+            put("module", "media_info")
+            put("codec_count", arr.length())
+            put("hw_encoders", hwEnc)
+            put("sw_encoders", swEnc)
+            put("hw_decoders", hwDec)
+            put("sw_decoders", swDec)
+            put("codecs", arr)
+        }.toString())
+    }
+}
+`,
+  },
+  {
+    path: "android/app/src/main/java/com/phoneclusterapp/modules/ClusterOrchestratorModule.kt",
+    lang: "kotlin",
+    description: "Cluster orchestrator — LAN peer discovery + fan-out dispatch",
+    content: `package com.phoneclusterapp.modules
+
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.URL
+import java.util.Collections
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/**
+ * Cluster orchestrator: discovers peer PhoneCluster nodes on the LAN (subnet
+ * scan of :8080), aggregates their /v1/info, and fans a completion request out
+ * to every node. This is what turns several phones into one compute pool.
+ */
+class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
+    override val id = "cluster"
+    private val selfPorts = listOf(8080, 8081)
+
+    private fun ownIps(): List<String> {
+        val out = mutableListOf<String>()
+        try {
+            Collections.list(NetworkInterface.getNetworkInterfaces()).forEach { i ->
+                if (!i.isUp || i.isLoopback) return@forEach
+                Collections.list(i.inetAddresses).forEach { a ->
+                    if (a is Inet4Address && !a.isLoopbackAddress) a.hostAddress?.let { out.add(it) }
+                }
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
+    private fun lanBase(): String? {
+        try {
+            Collections.list(NetworkInterface.getNetworkInterfaces()).forEach { i ->
+                if (!i.isUp || i.isLoopback) return@forEach
+                Collections.list(i.inetAddresses).forEach { a ->
+                    if (a is Inet4Address && !a.isLoopbackAddress) {
+                        val ip = a.hostAddress ?: return@forEach
+                        val parts = ip.split(".")
+                        if (parts.size == 4) return parts.subList(0, 3).joinToString(".")
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun fetchJson(host: String, port: Int, path: String, timeoutMs: Int, postBody: String? = null): JSONObject? {
+        return try {
+            val c = URL("http://$host:$port$path").openConnection() as HttpURLConnection
+            c.connectTimeout = timeoutMs
+            c.readTimeout = if (postBody != null) 60000 else timeoutMs
+            if (postBody != null) {
+                c.requestMethod = "POST"
+                c.setRequestProperty("Content-Type", "application/json")
+                c.doOutput = true
+                c.outputStream.use { it.write(postBody.toByteArray()) }
+            }
+            try { JSONObject(c.inputStream.bufferedReader().use { it.readText() }) } finally { c.disconnect() }
+        } catch (_: Exception) { null }
+    }
+
+    private fun discoverPeers(timeoutMs: Int): List<Triple<String, Int, JSONObject?>> {
+        val base = lanBase() ?: return emptyList()
+        val own = ownIps()
+        val peers = mutableListOf<Triple<String, Int, JSONObject?>>()
+        val pool = Executors.newFixedThreadPool(48)
+        val futs = (1..254).map { last ->
+            pool.submit {
+                val host = "$base.$last"
+                if (host in own) return@submit
+                val info = fetchJson(host, 8080, "/v1/info", timeoutMs)
+                if (info != null) synchronized(peers) { peers.add(Triple(host, 8080, info)) }
+            }
+        }
+        futs.forEach { it.get() }
+        pool.shutdown()
+        pool.awaitTermination(5, TimeUnit.SECONDS)
+        return peers
+    }
+
+    private fun allNodes(scanTimeoutMs: Int): JSONArray {
+        val arr = JSONArray()
+        for (port in selfPorts) {
+            val info = fetchJson("127.0.0.1", port, "/v1/info", 800)
+            arr.put(JSONObject().put("host", "127.0.0.1").put("port", port).put("self", true).put("info", info ?: JSONObject()))
+        }
+        for ((host, port, info) in discoverPeers(scanTimeoutMs)) {
+            arr.put(JSONObject().put("host", host).put("port", port).put("self", false).put("info", info ?: JSONObject()))
+        }
+        return arr
+    }
+
+    override fun handle(method: String, uri: String, body: String): ModuleResponse? {
+        when (uri) {
+            "/v1/cluster/nodes" -> {
+                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                return ModuleResponse(body = JSONObject().put("nodes", allNodes(350)).toString())
+            }
+            "/v1/cluster/info" -> {
+                if (method != "GET") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                val nodes = allNodes(350)
+                var cores = 0
+                var ram = 0L
+                var count = 0
+                for (i in 0 until nodes.length()) {
+                    val o = nodes.optJSONObject(i) ?: continue
+                    val info = o.optJSONObject("info") ?: continue
+                    count++
+                    cores += info.optInt("cpu_cores")
+                    ram += info.optLong("ram_available_mb")
+                }
+                return ModuleResponse(body = JSONObject()
+                    .put("node_count", count)
+                    .put("cluster_cpu_cores", cores)
+                    .put("cluster_ram_available_mb", ram)
+                    .put("nodes", nodes).toString())
+            }
+            "/v1/cluster/completions" -> {
+                if (method != "POST") return ModuleResponse(status = 405, body = """{"error":"method_not_allowed"}""")
+                val req = try { JSONObject(if (body.isBlank()) "{}" else body) } catch (_: Exception) { JSONObject() }
+                val prompt = req.optString("prompt", "")
+                val nPredict = req.optInt("n_predict", req.optInt("max_tokens", 96))
+                val nodes = allNodes(350)
+                val results = JSONArray()
+                val pool = Executors.newFixedThreadPool(16)
+                val futs = (0 until nodes.length()).map { i ->
+                    pool.submit {
+                        val o = nodes.optJSONObject(i) ?: return@submit
+                        val host = o.optString("host")
+                        val port = o.optInt("port")
+                        val resp = fetchJson(host, port, "/v1/completions", 60000,
+                            JSONObject().put("prompt", prompt).put("n_predict", nPredict).toString())
+                        val content = resp?.optString("content", resp.optString("error", "no_response")) ?: "no_response"
+                        synchronized(results) {
+                            results.put(JSONObject().put("host", host).put("port", port)
+                                .put("self", o.optBoolean("self")).put("content", content))
+                        }
+                    }
+                }
+                futs.forEach { it.get() }
+                pool.shutdown()
+                return ModuleResponse(body = JSONObject().put("prompt", prompt)
+                    .put("node_count", nodes.length()).put("results", results).toString())
+            }
+        }
+        return null
+    }
 }
 `,
   },
