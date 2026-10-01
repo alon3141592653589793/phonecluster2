@@ -1,6 +1,7 @@
 package com.phoneclusterapp.modules
 
 import fi.iki.elonen.NanoHTTPD
+import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -56,7 +57,7 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
         val notFound = newFixedLengthResponse(
             Response.Status.NOT_FOUND,
             "application/json",
-            """{"error":"no module handles ${method} ${uri}"}"""
+            JSONObject().put("error_code", "NOT_FOUND").put("error", "no module handles " + method + " " + uri).toString()
         )
         addCorsHeaders(notFound)
         return notFound
