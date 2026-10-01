@@ -48,7 +48,11 @@ class ComputeHttpServer(port: Int) : NanoHTTPD("0.0.0.0", port) {
             val result = module.handle(method, uri, body)
             if (result != null) {
                 val status = Response.Status.lookup(result.status) ?: Response.Status.OK
-                val resp = newFixedLengthResponse(status, result.mimeType, result.body)
+                val resp = if (result.bytes != null) {
+                    newFixedLengthResponse(status, result.mimeType, java.io.ByteArrayInputStream(result.bytes), result.bytes.size.toLong())
+                } else {
+                    newFixedLengthResponse(status, result.mimeType, result.body)
+                }
                 addCorsHeaders(resp)
                 return resp
             }
