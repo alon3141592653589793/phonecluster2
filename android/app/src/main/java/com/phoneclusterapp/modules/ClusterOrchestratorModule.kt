@@ -53,7 +53,7 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
         return try {
             val c = URL("http://$host:$port$path").openConnection() as HttpURLConnection
             c.connectTimeout = timeoutMs
-            c.readTimeout = if (postBody != null) 60000 else timeoutMs
+            c.readTimeout = if (postBody != null) 300000 else timeoutMs
             if (postBody != null) {
                 c.requestMethod = "POST"; c.setRequestProperty("Content-Type", "application/json"); c.doOutput = true
                 c.outputStream.use { it.write(postBody.toByteArray()) }
@@ -65,12 +65,21 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                 if (es != null) {
                     es.bufferedReader().use { it.readText() }
                 } else {
+                    val code = c.responseCode
                     c.disconnect()
-                    return null
+                    return if (postBody != null) JSONObject().put("error_code", "NODE_HTTP_$code")
+                        .put("error", "node_http_error").put("stage", "response").put("detail", "$host:$port returned HTTP $code with no response body.") else null
                 }
             }
-            try { JSONObject(raw) } catch (_: Exception) { null } finally { c.disconnect() }
-        } catch (_: Exception) { null }
+            try { JSONObject(raw) } catch (_: Exception) {
+                if (postBody != null) JSONObject().put("error_code", "NODE_INVALID_RESPONSE")
+                    .put("error", "invalid_response").put("stage", "response").put("detail", raw.take(500)) else null
+            } finally { c.disconnect() }
+        } catch (e: Exception) {
+            if (postBody != null) JSONObject().put("error_code", "NODE_REQUEST_FAILED")
+                .put("error", "node_request_failed").put("stage", "connection")
+                .put("detail", "$host:$port: ${e.message ?: e.javaClass.simpleName}") else null
+        }
     }
 
     private fun discoverPeers(timeoutMs: Int): List<Triple<String, Int, JSONObject?>> {
@@ -95,10 +104,12 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
         val arr = JSONArray()
         for (port in selfPorts) {
             val info = fetchJson("127.0.0.1", port, "/v1/info", 800)
-            arr.put(JSONObject().put("host", "127.0.0.1").put("port", port).put("self", true).put("info", info ?: JSONObject()))
+            if (info != null && info.optString("node_id").isNotBlank())
+                arr.put(JSONObject().put("host", "127.0.0.1").put("port", port).put("self", true).put("info", info))
         }
         for ((host, port, info) in discoverPeers(scanTimeoutMs)) {
-            arr.put(JSONObject().put("host", host).put("port", port).put("self", false).put("info", info ?: JSONObject()))
+            if (info != null && info.optString("node_id").isNotBlank())
+                arr.put(JSONObject().put("host", host).put("port", port).put("self", false).put("info", info))
         }
         return arr
     }
@@ -112,14 +123,26 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
             "/v1/cluster/info" -> {
                 if (method != "GET") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
                 val nodes = allNodes(350)
-                var cores = 0; var ram = 0L; var count = 0
+                val devices = linkedMapOf<String, JSONObject>()
                 for (i in 0 until nodes.length()) {
                     val o = nodes.optJSONObject(i) ?: continue
                     val info = o.optJSONObject("info") ?: continue
-                    count++; cores += info.optInt("cpu_cores"); ram += info.optLong("ram_available_mb")
+                    val deviceId = info.optString("physical_device_id", info.optString("node_id"))
+                        .takeIf { it.isNotBlank() && it != "unknown" } ?: o.optString("host")
+                    if (devices.containsKey(deviceId)) {
+                        o.put("shared_hardware", true)
+                    } else {
+                        devices[deviceId] = info
+                        o.put("shared_hardware", false)
+                    }
                 }
-                return ModuleResponse(body = JSONObject().put("node_count", count)
-                    .put("cluster_cpu_cores", cores).put("cluster_ram_available_mb", ram).put("nodes", nodes).toString())
+                val cores = devices.values.sumOf { it.optInt("cpu_cores") }
+                val ram = devices.values.sumOf { it.optLong("ram_available_mb") }
+                return ModuleResponse(body = JSONObject().put("node_count", nodes.length())
+                    .put("physical_device_count", devices.size)
+                    .put("cluster_cpu_cores", cores).put("cluster_ram_available_mb", ram)
+                    .put("hardware_note", "CPU and RAM counted once per physical device. Simulator nodes share hardware.")
+                    .put("nodes", nodes).toString())
             }
             "/v1/cluster/completions" -> {
                 if (method != "POST") return ModuleResponse(status = 405, body = JSONObject().put("error_code", "METHOD_NOT_ALLOWED").put("error", "method_not_allowed").toString())
@@ -127,6 +150,8 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                 val prompt = req.optString("prompt", "")
                 val nPredict = req.optInt("n_predict", req.optInt("max_tokens", 96))
                 val nodes = allNodes(350)
+                if (nodes.length() == 0) return ModuleResponse(status = 503, body = JSONObject()
+                    .put("error_code", "CLUSTER_EMPTY").put("error", "No online nodes. Start the daemon first.").toString())
                 val results = JSONArray()
                 val pool = Executors.newFixedThreadPool(16)
                 val futs = (0 until nodes.length()).map { i ->
@@ -135,11 +160,11 @@ class ClusterOrchestratorModule(private val context: Context) : ComputeModule {
                         val host = o.optString("host"); val port = o.optInt("port")
                         val resp = fetchJson(host, port, "/v1/completions", 60000,
                             JSONObject().put("prompt", prompt).put("n_predict", nPredict).toString())
-                        val content = resp?.optString("content", resp.optString("error", "no_response")) ?: "no_response"
-                        synchronized(results) {
-                            results.put(JSONObject().put("host", host).put("port", port)
-                                .put("self", o.optBoolean("self")).put("content", content))
-                        }
+                        val result = resp ?: JSONObject().put("error_code", "NODE_NO_RESPONSE")
+                            .put("error", "no_response").put("stage", "connection").put("detail", "No valid response from $host:$port")
+                        if (!result.has("content")) result.put("content", result.optString("detail", result.optString("error", "no_response")))
+                        result.put("host", host).put("port", port).put("self", o.optBoolean("self"))
+                        synchronized(results) { results.put(result) }
                     }
                 }
                 futs.forEach { it.get() }

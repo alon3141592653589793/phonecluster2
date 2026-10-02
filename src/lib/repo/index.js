@@ -4,8 +4,12 @@ import { nativeFiles } from "./native";
 import { pcFiles } from "./pc";
 import { ciFiles } from "./ci";
 import { wrapperFiles } from "./wrapper";
+import { currentAndroidFiles } from "@/lib/repo/currentAndroid";
 
-export const repoFiles = [...ciFiles, ...androidFiles, ...wrapperFiles, ...nativeFiles, ...kotlinFiles, ...pcFiles];
+// The viewer and setup download use the actual Android sources, not stale copies.
+const originals = [...ciFiles, ...androidFiles, ...wrapperFiles, ...nativeFiles, ...kotlinFiles, ...pcFiles];
+const currentPaths = new Set(currentAndroidFiles.map(file => file.path));
+export const repoFiles = [...originals.filter(file => !currentPaths.has(file.path)), ...currentAndroidFiles];
 
 export function buildRows(files) {
   const rows = [];

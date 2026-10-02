@@ -23,6 +23,7 @@ import com.phoneclusterapp.modules.GpuInfoModule
 import com.phoneclusterapp.modules.InfoModule
 import com.phoneclusterapp.modules.LlmModule
 import com.phoneclusterapp.modules.MediaModule
+import com.phoneclusterapp.models.ModelFiles
 
 class ComputeDaemonService : Service() {
 
@@ -38,6 +39,8 @@ class ComputeDaemonService : Service() {
         // Lightweight, queryable from the UI without binding to the service.
         @Volatile
         var running: Boolean = false
+            private set
+        @Volatile var startupError: String? = null
             private set
     }
 
@@ -57,29 +60,34 @@ class ComputeDaemonService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                NOTIFICATION_ID, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        startupError = null
+        try {
+            val notification = buildNotification()
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else { startForeground(NOTIFICATION_ID, notification) }
+            acquireWakeLock()
+            startServer()
+            running = servers.isNotEmpty()
+            if (!running) { stopSelf(); return START_NOT_STICKY }
+            return START_STICKY
+        } catch (e: Exception) {
+            startupError = "DAEMON_START_FAILED: ${e.message ?: e.javaClass.simpleName}"
+            Log.e(TAG, startupError, e)
+            stopSelf()
+            return START_NOT_STICKY
         }
-        acquireWakeLock()
-        startServer()
-        running = true
-        return START_STICKY
     }
 
     private fun startServer() {
         if (servers.isNotEmpty()) return
         val moduleIds = listOf("info_daemon", "llm", "cpu_bench", "gpu_info", "media_info", "cluster")
+        val llm = LlmModule(applicationContext)
         for (port in PORTS) {
             try {
                 val s = ComputeHttpServer(port).apply {
-                    register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds))
-                    register(LlmModule(this@ComputeDaemonService))
+                    register(InfoModule(this@ComputeDaemonService, startTimeMs, moduleIds, port))
+                    register(llm)
                     register(CpuBenchModule())
                     register(GpuInfoModule())
                     register(MediaModule())
@@ -89,10 +97,14 @@ class ComputeDaemonService : Service() {
                 servers.add(s)
                 Log.i(TAG, "HTTP server on 0.0.0.0:${port}  modules=${s.registeredModuleIds}")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start HTTP server on ${port}", e)
+                startupError = "SERVER_START_FAILED on :$port: ${e.message ?: e.javaClass.simpleName}"
+                Log.e(TAG, startupError, e)
             }
         }
-        registerNsd()
+        if (servers.isNotEmpty()) {
+            registerNsd()
+            if (ModelFiles.file(this).exists()) llm.loadAsync()
+        }
     }
 
     private fun stopServer() {
